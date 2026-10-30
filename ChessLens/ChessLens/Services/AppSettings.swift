@@ -2,6 +2,7 @@ import Foundation
 
 /// UserDefaults keys shared by `SettingsView` (via @AppStorage) and the game logic.
 enum SettingsKey {
+    static let playMode = "playMode"
     static let playerColor = "playerColor"
     static let handsFree = "handsFree"
     static let announceOpponent = "announceOpponent"
@@ -9,11 +10,21 @@ enum SettingsKey {
     static let thinkTimeMilliseconds = "thinkTimeMilliseconds"
 }
 
+/// Where the game is played: on a physical board seen through the glasses, or on the screen.
+enum PlayMode: String, CaseIterable, Identifiable {
+    case glasses
+    case screen
+
+    var id: String { rawValue }
+    var label: String { self == .glasses ? "Glasses" : "Screen" }
+}
+
 enum AppSettings {
     private static var defaults: UserDefaults { .standard }
 
     static func registerDefaults() {
         defaults.register(defaults: [
+            SettingsKey.playMode: PlayMode.glasses.rawValue,
             SettingsKey.playerColor: PieceColor.white.rawValue,
             SettingsKey.handsFree: true,
             SettingsKey.announceOpponent: true,
@@ -22,6 +33,10 @@ enum AppSettings {
         ])
     }
 
+    static var playMode: PlayMode {
+        get { PlayMode(rawValue: defaults.string(forKey: SettingsKey.playMode) ?? "") ?? .glasses }
+        set { defaults.set(newValue.rawValue, forKey: SettingsKey.playMode) }
+    }
     static var playerColor: PieceColor {
         PieceColor(rawValue: defaults.string(forKey: SettingsKey.playerColor) ?? "") ?? .white
     }

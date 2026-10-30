@@ -1,23 +1,28 @@
 # ChessLens
 
-An iPhone app that watches a real chess game through your **Ray-Ban Meta (Gen 2)** glasses and speaks the best move, computed by **Stockfish 17** on the phone. Everything runs on the iPhone. There are no paid services and no images leave the phone.
+An iPhone app that tells you the best chess move, computed by **Stockfish 17** on the phone. There are two ways to play:
+
+- **Glasses:** it watches a real board through your **Ray-Ban Meta (Gen 2)** glasses, finds the board by itself, follows the game and speaks your best move through the glasses.
+- **Screen:** you play on the app's board (tap the moves for both sides) and it speaks your best move through the iPhone speaker.
+
+Everything runs on the iPhone. There are no paid services and no images leave the phone.
 
 ```
 glasses camera ─► board found & aligned ─► which squares changed? ─► matching legal move ─► Stockfish ─► spoken through the glasses
 ```
 
-## How it works
+## How glasses mode works
 
 The app doesn't try to recognise pieces from scratch. It **follows the game from a known position**:
 
-1. **Calibrate once.** With the pieces in the starting position (or any position you've entered), look at the board and mark its four corners on the phone.
+1. **Find the board (automatic).** With the pieces in the starting position (or the position shown in the app), look at the board. The app tries every rectangle the camera sees, in every orientation and stepped in from the board's outer frame. It keeps the fit that looks like a chessboard in that position: light and dark squares alternating, pieces where pieces should be, White pieces lighter than Black. Two frames in a row must agree, then it says *"Board found"*. If it loses the board later, it finds it again the same way. You can still place the corners by hand if needed.
 2. **Watch.** Whenever your view holds still for about a second, the app aligns the new frame with the last confirmed view (your head moves). It warps the board to a top-down image and measures how much each of the 64 squares changed.
 3. **Match a legal move.** It tries every legal move, and every move-plus-reply in case you looked away while both were played. It picks the one whose changed squares fit what the camera saw. It also uses a simple empty / White / Black guess per square. A move is only accepted if a second frame agrees.
 4. **Speak.** After your opponent's move it says something like *"Opponent: knight g8 to f6. Play bishop f1 to b5."* After your own move it stays quiet.
 
 If it can't tell what happened, it says *"I didn't catch that move"*. You can then tap the move on the phone, and long-press any square to fix a piece.
 
-> **Status: untested on real glasses.** The move-matching logic was checked in a simulation, and the move generator against standard chess test positions (perft). The camera side (board alignment with a head-mounted camera, lighting, how pieces cover each other) has not been tried on real hardware yet. Expect to tune it.
+> **Status: glasses mode is untested on real glasses.** The move-matching logic and the automatic board finder were checked in simulation, and the move generator against standard chess test positions (perft). The camera side (finding and following the board with a head-mounted camera, lighting, how pieces cover each other) has not been tried on real hardware yet. Expect to tune it. Screen mode doesn't depend on the camera.
 
 ---
 
@@ -55,16 +60,25 @@ SideStore → **My Apps** → **+** → pick `ChessLens.ipa` from Files.
 
 ## Play
 
-1. **Settings** (gear icon): choose White or Black, and Stockfish's think time.
-2. **Connect glasses via Meta AI**: approve ChessLens in the Meta AI app.
-3. **Start glasses camera**: the first time, allow camera access in Meta AI.
-4. Set up the starting position. Sit normally and look at the whole board. Tap **Calibrate board** and drag the four dots onto the corners of the 64 squares, then tap **Start**. If you're White, it speaks your first move.
-5. Play. Glance at the board after each move and hold still for a moment.
+In **Settings** (gear icon), choose White or Black and Stockfish's think time. Pick **Glasses** or **Screen** at the top of the main screen.
+
+**On the screen**
+1. Tap **New game**. If you're White, it says your first move.
+2. Tap a piece, then its square, to play moves for both sides (yours and your opponent's). On your turn it says the best move through the iPhone speaker. **Play it** makes that move for you.
+3. **Undo** takes back a move. Long-press a square to change a piece, or set any position with **FEN**.
+
+Speech plays through the iPhone speaker unless Bluetooth headphones or the glasses are connected for audio; then iOS sends it there.
+
+**With the glasses**
+1. **Connect glasses via Meta AI**: approve ChessLens in the Meta AI app.
+2. **Start glasses camera**: the first time, allow camera access in Meta AI.
+3. Set up the starting position, sit normally and look at the whole board. When the app finds the board it says *"Board found"* (and your first move if you're White). If it doesn't find it, tap **Set board corners by hand**.
+4. Play. Glance at the board after each move and hold still for a moment.
 
 Tips:
 - Keep the whole board in view when you check it. A slightly higher viewing angle works better.
 - Even light helps; avoid strong shadows from your hands or head across the board.
-- The yellow outline on the preview shows where the app thinks the board is. If it drifts, tap **Recalibrate board**.
+- The yellow outline on the preview shows where the app thinks the board is. If it's wrong, tap **Set board corners by hand**.
 - **Check now** forces a look right away. **Undo** takes back a wrongly detected move.
 - The phone stays awake while the glasses camera runs. Keep ChessLens open (the phone can lie face down).
 - Most clubs and tournaments don't allow engine help during a game. Use it for practice and casual games.
@@ -82,7 +96,8 @@ Tips:
 | Rules: legal moves, FEN, move wording | `ChessLens/Chess/ChessPosition.swift`, `ChessLens/Chess/ChessBoard.swift` |
 | Stockfish | `ChessLens/Engine/StockfishEngine.swift` (ChessKitEngine 0.7.0) |
 | Game flow, speech, corrections | `ChessLens/ViewModels/GameViewModel.swift` |
-| Calibration screen | `ChessLens/Views/CalibrationView.swift` |
+| Automatic board finding | `locateBoard` / `boardMatch` in `ChessLens/Vision/BoardTracker.swift` |
+| Manual corner screen (fallback) | `ChessLens/Views/CalibrationView.swift` |
 | Project definition | `project.yml` (XcodeGen), `Config/` |
 | CI build and download | `.github/workflows/chesslens-ios.yml` |
 
@@ -93,7 +108,8 @@ Stockfish's neural network files (~75 MB) are downloaded during the build by `sc
 ## Troubleshooting
 
 - **Glasses don't connect:** check Developer Mode (step 1), that the glasses are unfolded and connected in Meta AI, and that Bluetooth is on.
-- **"Board not found":** look at the whole board, or recalibrate.
+- **Board never found:** make sure the pieces match the position shown in the app, the whole board is in view, and the light is even. Otherwise use **Set board corners by hand**.
+- **"Board not found" during a game:** look at the whole board for a moment; it searches again automatically.
 - **Moves aren't noticed:** hold your head still for about a second after a move, keep hands off the board, and try **Check now**.
 - **Wrong move detected:** tap **Undo**, then tap the right move on the phone.
 

@@ -3,9 +3,11 @@ import Foundation
 import Observation
 import UIKit
 
-/// Follows a game played on a physical board: calibrate once on a known position, then each
-/// time the view settles, detect the move(s) played, and when it's the wearer's turn ask
-/// Stockfish for the best move and speak it.
+/// Runs a game in one of two modes:
+/// - **Glasses:** finds the physical board by itself, then each time the view settles detects
+///   the move(s) played; on the wearer's turn Stockfish's best move is spoken.
+/// - **Screen:** both sides' moves are tapped on the on-screen board and the best move is
+///   spoken through the phone.
 @Observable
 @MainActor
 final class GameViewModel {
@@ -25,6 +27,13 @@ final class GameViewModel {
     }
 
     var state: TrackingState = .notCalibrated
+    var mode: PlayMode = AppSettings.playMode {
+        didSet {
+            guard mode != oldValue else { return }
+            AppSettings.playMode = mode
+            modeDidChange()
+        }
+    }
     var position: ChessPosition = .start
     private(set) var history: [ChessPosition] = []
     private(set) var moveLog: [String] = []
@@ -45,12 +54,15 @@ final class GameViewModel {
         switch state {
         case .notCalibrated:
             return glasses.isStreaming
-                ? "Set up the position, look at the board, then tap Calibrate."
-                : "Start the glasses camera, then calibrate the board."
+                ? "Looking for the board… Set up the position shown below and look at the whole board."
+                : "Start the glasses camera to begin."
         case .watching:
+            if mode == .screen {
+                return isPlayersTurn ? "Your move: tap it on the board, or tap Play it." : "Enter your opponent's move on the board."
+            }
             return isPlayersTurn ? "Your move." : "Watching for your opponent's move…"
         case .thinking: return "Stockfish is thinking…"
-        case .lost: return "Board not found. Look at the whole board, or recalibrate."
+        case .lost: return "Board not found. Look at the whole board."
         case .unsure(let message): return message
         case .gameOver(let result): return result
         }
@@ -94,10 +106,33 @@ final class GameViewModel {
     @ObservationIgnored private var lostCount = 0
     @ObservationIgnored private var lastWarning = Date.distantPast
     @ObservationIgnored private var engineTask: Task<Void, Never>?
+    @ObservationIgnored private var isLocating = false
+    @ObservationIgnored private var lastLocateAttempt = Date.distantPast
+    @ObservationIgnored private var candidateCorners: BoardCorners?
+
+    /// What to show when nothing is happening.
+    private var idleState: TrackingState { mode == .screen || isCalibrated ? .watching : .notCalibrated }
 
     init(glasses: GlassesManager) {
         self.glasses = glasses
         glasses.onFrame = { [weak self] frame in self?.handleFrame(frame) }
+        if mode == .screen {
+            state = .watching
+            positionChanged(announcement: nil, speak: false)
+        }
+    }
+
+    /// The player's colour decides which side of the board is nearest and when to speak.
+    func playerColorChanged() {
+        candidateCorners = nil
+        positionChanged(announcement: nil, speak: false)
+    }
+
+    private func modeDidChange() {
+        selectedSquare = nil
+        candidateCorners = nil
+        state = idleState
+        positionChanged(announcement: nil, speak: false)
     }
 
     // MARK: Calibration
@@ -107,7 +142,7 @@ final class GameViewModel {
             state = .unsure("Start the glasses camera and look at the board first.")
             return
         }
-        let guess = await tracker.suggestCorners(in: frame, playerColor: playerColor)
+        let guess = await tracker.suggestCorners(in: frame, board: position.board, playerColor: playerColor)
         calibration = CalibrationDraft(frame: frame, corners: calibration?.corners ?? guess)
     }
 
@@ -120,7 +155,7 @@ final class GameViewModel {
 
     func detectCornersAgain() async {
         guard let draft = calibration else { return }
-        let guess = await tracker.suggestCorners(in: draft.frame, playerColor: playerColor)
+        let guess = await tracker.suggestCorners(in: draft.frame, board: position.board, playerColor: playerColor)
         calibration?.corners = guess
     }
 
@@ -147,8 +182,12 @@ final class GameViewModel {
         lastEvent = nil
         selectedSquare = nil
         corners = nil
-        state = .notCalibrated
+        candidateCorners = nil
+        state = idleState
         Task { await tracker.reset() }
+        // On screen, start right away (if you're White the first move is spoken). With the
+        // glasses, the app first finds the board, then speaks.
+        if mode == .screen { positionChanged(announcement: nil, speak: true) }
     }
 
     func undo() {
@@ -160,18 +199,26 @@ final class GameViewModel {
         positionChanged(announcement: nil, speak: false)
     }
 
-    /// Tap a piece of the side to move, then its destination, to enter a move the camera missed.
+    /// Tap a piece of the side to move, then its destination: how moves are played in screen
+    /// mode, and how a move the camera missed is entered in glasses mode.
     func tap(_ square: Square) {
         if let from = selectedSquare {
             selectedSquare = nil
             let matches = position.legalMoves().filter { $0.from == from && $0.to == square }
             if let move = matches.first(where: { $0.promotion == nil || $0.promotion == .queen }) {
-                record([move], announce: false)
+                record([move], announceOpponent: false, speak: true)
                 resyncTracker()
                 return
             }
         }
         if position.board[square]?.color == position.sideToMove { selectedSquare = square }
+    }
+
+    /// Plays the suggested move on the on-screen board.
+    func playSuggestion() {
+        guard let suggestion, let move = UCIMove(suggestion.bestMove),
+              position.legalMoves().contains(move) else { return }
+        record([move], announceOpponent: false, speak: true)
     }
 
     /// Replaces the position (piece edits, FEN, side to move). History is kept for undo.
@@ -213,14 +260,55 @@ final class GameViewModel {
     // MARK: Watching the board
 
     private func handleFrame(_ frame: UIImage) {
-        guard AppSettings.handsFree, isCalibrated, !isChecking, calibration == nil else { return }
+        guard mode == .glasses, calibration == nil else { return }
         if case .gameOver = state { return }
+        guard isCalibrated else {
+            locateIfDue(frame)
+            return
+        }
+        guard AppSettings.handsFree, !isChecking else { return }
         let now = Date()
         guard now.timeIntervalSince(lastFrameCheck) >= 0.25 else { return }
         lastFrameCheck = now
         guard sceneDetector.shouldAnalyze(frame, now: now) else { return }
         sceneDetector.markAnalyzed(frame, now: now)
         Task { await check(frame) }
+    }
+
+    // MARK: Automatic calibration
+
+    private func locateIfDue(_ frame: UIImage) {
+        let now = Date()
+        guard !isLocating, now.timeIntervalSince(lastLocateAttempt) >= 1 else { return }
+        lastLocateAttempt = now
+        Task { await locateBoard(in: frame) }
+    }
+
+    /// Looks for a board showing the current position and starts tracking once two frames in a
+    /// row agree on where it is, so a lucky fit on some other rectangle can't start a game.
+    private func locateBoard(in frame: UIImage) async {
+        guard let image = frame.uprightCGImage() else { return }
+        isLocating = true
+        defer { isLocating = false }
+
+        let board = position.board
+        guard let found = await tracker.locateBoard(in: image, board: board, playerColor: playerColor) else {
+            candidateCorners = nil
+            return
+        }
+        guard let previous = candidateCorners, previous.distance(to: found.corners) < 0.04 else {
+            candidateCorners = found.corners
+            return
+        }
+        candidateCorners = nil
+        guard !isCalibrated, calibration == nil, mode == .glasses, position.board == board,
+              await tracker.calibrate(frame: image, corners: found.corners, board: board)
+        else { return }
+
+        corners = found.corners
+        sceneDetector.reset()
+        lostCount = 0
+        positionChanged(announcement: "Board found", speak: true)
     }
 
     /// Looks for a move on the board right now (also used by the "Check now" button).
@@ -250,7 +338,7 @@ final class GameViewModel {
         else { return }
 
         await tracker.commitPending(board: result.board)
-        record(moves, announce: true)
+        record(moves, announceOpponent: true, speak: true)
     }
 
     /// Aligns the frame and runs move detection off the main thread. Nil when the board wasn't found.
@@ -266,7 +354,7 @@ final class GameViewModel {
         case .observed(let observation, let newCorners):
             lostCount = 0
             corners = newCorners
-            if state == .lost { state = .watching }
+            if state == .lost { state = idleState }
             let player = playerColor
             return await Task.detached(priority: .userInitiated) {
                 MoveDetector.detect(from: start, observation: observation, playerColor: player)
@@ -279,7 +367,7 @@ final class GameViewModel {
         case .noChange:
             // Keep the reference fresh as lighting and viewing angle drift.
             Task { [position] in await tracker.commitPending(board: position.board) }
-            if case .unsure = state { state = .watching }
+            if case .unsure = state { state = idleState }
         case .unclear:
             state = .unsure("Something changed but it doesn't match a move. If a move was played, tap it on the board.")
         case .ambiguous:
@@ -292,7 +380,7 @@ final class GameViewModel {
 
     // MARK: Moves and suggestions
 
-    private func record(_ moves: [UCIMove], announce: Bool) {
+    private func record(_ moves: [UCIMove], announceOpponent: Bool, speak: Bool) {
         var walker = position
         var opponentMoves: [String] = []
         for move in moves {
@@ -309,10 +397,10 @@ final class GameViewModel {
             ? "Played \(moveLog.last ?? "")"
             : "Played \(moveLog.suffix(moves.count).joined(separator: ", "))"
 
-        let announcement = announce && AppSettings.announceOpponent && !opponentMoves.isEmpty
+        let announcement = announceOpponent && AppSettings.announceOpponent && !opponentMoves.isEmpty
             ? "Opponent: " + opponentMoves.joined(separator: ", then ")
             : nil
-        positionChanged(announcement: announcement, speak: announce)
+        positionChanged(announcement: announcement, speak: speak)
     }
 
     private func positionChanged(announcement: String?, speak: Bool) {
@@ -326,7 +414,8 @@ final class GameViewModel {
             return
         }
         guard isPlayersTurn else {
-            state = isCalibrated ? .watching : .notCalibrated
+            state = idleState
+            if speak, let announcement { Speaker.shared.say(announcement) }
             return
         }
 
@@ -344,7 +433,7 @@ final class GameViewModel {
                     fen: analyzed.fen, movetimeMilliseconds: AppSettings.thinkTimeMilliseconds)
                 guard !Task.isCancelled, analyzed == position else { return }
                 suggestion = analysis
-                state = isCalibrated ? .watching : .notCalibrated
+                state = idleState
                 if speak { Speaker.shared.say([announcement, sentence(for: analysis)].compactMap { $0 }.joined(separator: ". ")) }
             } catch {
                 guard !Task.isCancelled, analyzed == position else { return }
@@ -365,7 +454,7 @@ final class GameViewModel {
     }
 
     private func resyncTracker() {
-        guard isCalibrated, let frame = glasses.latestFrame?.uprightCGImage() else { return }
+        guard mode == .glasses, isCalibrated, let frame = glasses.latestFrame?.uprightCGImage() else { return }
         let board = position.board
         Task {
             if let newCorners = await tracker.resync(frame: frame, board: board) {

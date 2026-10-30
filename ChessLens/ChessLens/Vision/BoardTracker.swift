@@ -34,6 +34,24 @@ struct BoardCorners: Equatable {
         map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
     }
 
+    /// The same quadrilateral with its labels turned by `steps` quarter turns.
+    func rotated(_ steps: Int) -> BoardCorners {
+        let p = points
+        return BoardCorners((0..<4).map { p[($0 + steps) % 4] })
+    }
+
+    /// Shrinks the quadrilateral by `t` (fraction of the board) on every side, in board space,
+    /// e.g. to step in from a board's outer frame to its playing area. Negative `t` grows it.
+    func inset(_ t: CGFloat) -> BoardCorners {
+        BoardCorners(a1: point(u: t, v: t), h1: point(u: 1 - t, v: t),
+                     h8: point(u: 1 - t, v: 1 - t), a8: point(u: t, v: 1 - t))
+    }
+
+    /// Largest distance between matching corners, in unit coordinates.
+    func distance(to other: BoardCorners) -> CGFloat {
+        zip(points, other.points).map { hypot($0.x - $1.x, $0.y - $1.y) }.max() ?? 0
+    }
+
     /// Labels a quadrilateral seen from the player's seat: the near edge is the bottom of the image.
     /// `quad` is bottom-left, bottom-right, top-right, top-left.
     static func seated(_ quad: [CGPoint], playerColor: PieceColor) -> BoardCorners {
@@ -100,6 +118,7 @@ actor BoardTracker {
     private struct Reference {
         let view: View
         let model: AppearanceModel
+        let board: ChessBoard
     }
 
     private let context = CIContext(options: [.cacheIntermediates: false])
@@ -113,9 +132,11 @@ actor BoardTracker {
         pending = nil
     }
 
-    /// A first guess for the board's corners, from rectangle detection or a centred default.
-    func suggestCorners(in frame: CGImage, playerColor: PieceColor) -> BoardCorners {
-        let quad = detectQuadrilateral(in: frame) ?? [
+    /// A first guess for the board's corners for the manual calibration screen: the automatic fit
+    /// if there is one, else the largest rectangle, else a centred default.
+    func suggestCorners(in frame: CGImage, board: ChessBoard, playerColor: PieceColor) -> BoardCorners {
+        if let found = locateBoard(in: frame, board: board, playerColor: playerColor) { return found.corners }
+        let quad = detectQuadrilaterals(in: frame).first ?? [
             CGPoint(x: 0.15, y: 0.75), CGPoint(x: 0.85, y: 0.75),
             CGPoint(x: 0.85, y: 0.4), CGPoint(x: 0.15, y: 0.4),
         ]
@@ -132,7 +153,7 @@ actor BoardTracker {
     /// Aligns `frame` with the reference and reports how each square changed.
     func observe(_ frame: CGImage) -> TrackerResult {
         guard let reference else { return .notCalibrated }
-        guard let view = align(frame, to: reference.view) else { return .lost }
+        guard let view = align(frame, to: reference) else { return .lost }
         pending = view
         let differences = Self.differences(reference.view.pixels, view.pixels)
         let features = Self.features(view.pixels)
@@ -148,22 +169,23 @@ actor BoardTracker {
 
     /// Re-anchors on the current frame after a correction made on the phone.
     func resync(frame: CGImage, board: ChessBoard) -> BoardCorners? {
-        guard let reference, let view = align(frame, to: reference.view) else { return nil }
+        guard let reference, let view = align(frame, to: reference) else { return nil }
         set(view, board: board)
         return view.corners
     }
 
     private func set(_ view: View, board: ChessBoard) {
-        reference = Reference(view: view, model: AppearanceModel(features: Self.features(view.pixels), board: board))
+        reference = Reference(view: view, model: AppearanceModel(features: Self.features(view.pixels), board: board), board: board)
         pending = nil
     }
 
     // MARK: Alignment
 
-    private func align(_ frame: CGImage, to reference: View) -> View? {
+    private func align(_ frame: CGImage, to target: Reference) -> View? {
+        let reference = target.view
         var candidates = [reference.corners]
         candidates += registrationCandidates(from: reference.frame, to: frame, corners: reference.corners)
-        if let quad = detectQuadrilateral(in: frame) {
+        if let quad = detectQuadrilaterals(in: frame).first {
             candidates.append(closestLabeling(of: quad, to: reference.corners))
         }
 
@@ -176,6 +198,13 @@ actor BoardTracker {
             }
         }
         candidates.forEach(evaluate)
+
+        // Lost (the wearer looked far away and back): find the board from scratch, but still
+        // compare with the last confirmed view so a move made meanwhile isn't missed.
+        if (best?.error ?? .infinity) > Self.lostThreshold,
+           let found = locateBoard(in: frame, board: target.board, playerColor: .white) {
+            evaluate(found.corners)
+        }
         guard best != nil else { return nil }
 
         // Fine-tune with small shifts; registration and rectangle detection are only approximate.
@@ -232,26 +261,113 @@ actor BoardTracker {
         return results
     }
 
-    /// The largest rectangle-like shape, as bottom-left, bottom-right, top-right, top-left.
-    private func detectQuadrilateral(in frame: CGImage) -> [CGPoint]? {
+    /// Rectangle-like shapes, largest first, each as bottom-left, bottom-right, top-right, top-left.
+    private func detectQuadrilaterals(in frame: CGImage) -> [[CGPoint]] {
         let request = VNDetectRectanglesRequest()
         request.minimumAspectRatio = 0.3
         request.maximumAspectRatio = 1.0
-        request.minimumSize = 0.2
+        request.minimumSize = 0.15
         request.quadratureTolerance = 45
         request.minimumConfidence = 0.3
-        request.maximumObservations = 6
+        request.maximumObservations = 8
         do {
             try VNImageRequestHandler(cgImage: frame, options: [:]).perform([request])
         } catch {
-            return nil
+            return []
         }
-        guard let largest = request.results?.max(by: {
-            $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height
-        }) else { return nil }
         // Vision uses a bottom-left origin.
         func flip(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x, y: 1 - p.y) }
-        return [flip(largest.bottomLeft), flip(largest.bottomRight), flip(largest.topRight), flip(largest.topLeft)]
+        return (request.results ?? [])
+            .sorted { $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height }
+            .map { [flip($0.bottomLeft), flip($0.bottomRight), flip($0.topRight), flip($0.topLeft)] }
+    }
+
+    // MARK: Automatic calibration
+
+    /// How well a warped view matches a chessboard holding `board`: light squares brighter than
+    /// dark ones, occupied squares more textured than empty ones, White pieces brighter than Black.
+    /// Each part is a separation in standard deviations (clamped to -3…6).
+    struct BoardMatch {
+        var contrast: Float
+        var occupancy: Float
+        var colour: Float
+        var total: Float { contrast + occupancy + colour }
+        /// Thresholds chosen on synthetic boards (correct fit ≈ 15, rotated or shifted fits < 8).
+        var isConvincing: Bool { total >= 7 && contrast >= 1.5 && occupancy >= 0.5 && colour >= 0.5 }
+    }
+
+    static func boardMatch(_ pixels: [UInt8], board: ChessBoard) -> BoardMatch {
+        let features = Self.features(pixels)
+        let luminance = features.map { 0.299 * $0.x + 0.587 * $0.y + 0.114 * $0.z }
+        var emptyLight: [Float] = [], emptyDark: [Float] = []
+        var occupiedTexture: [Float] = [], emptyTexture: [Float] = []
+        for index in 0..<64 {
+            if board.squares[index] == nil {
+                if Square(index: index).isLight {
+                    emptyLight.append(luminance[index])
+                } else {
+                    emptyDark.append(luminance[index])
+                }
+                emptyTexture.append(features[index].w)
+            } else {
+                occupiedTexture.append(features[index].w)
+            }
+        }
+        let lightBase = emptyLight.mean, darkBase = emptyDark.mean
+        var white: [Float] = [], black: [Float] = []
+        for index in 0..<64 {
+            guard let piece = board.squares[index] else { continue }
+            let residual = luminance[index] - (Square(index: index).isLight ? lightBase : darkBase)
+            if piece.color == .white { white.append(residual) } else { black.append(residual) }
+        }
+        return BoardMatch(
+            contrast: separation(emptyLight, emptyDark),
+            occupancy: separation(occupiedTexture, emptyTexture),
+            colour: separation(white, black)
+        )
+    }
+
+    private static func separation(_ a: [Float], _ b: [Float]) -> Float {
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        let pooled = ((a.variance + b.variance) / 2).squareRoot()
+        return min(max((a.mean - b.mean) / max(pooled, 0.02), -3), 6)
+    }
+
+    /// Finds the board without help: tries each rectangle Vision sees, in every orientation and
+    /// stepped in from an outer frame, and keeps the fit that looks most like `board`.
+    func locateBoard(in frame: CGImage, board: ChessBoard, playerColor: PieceColor) -> (corners: BoardCorners, match: BoardMatch)? {
+        var best: (corners: BoardCorners, match: BoardMatch)?
+        func evaluate(_ corners: BoardCorners) {
+            guard corners.isPlausible, let pixels = warp(frame, corners) else { return }
+            let match = Self.boardMatch(pixels, board: board)
+            if best == nil || match.total > best!.match.total { best = (corners, match) }
+        }
+
+        for quad in detectQuadrilaterals(in: frame).prefix(6) {
+            let seated = BoardCorners.seated(quad, playerColor: playerColor)
+            for turn in 0..<4 {
+                for inset in [0, 0.04, 0.08, 0.12] as [CGFloat] {
+                    evaluate(seated.rotated(turn).inset(inset))
+                }
+            }
+        }
+        guard best != nil else { return nil }
+
+        // Fine-tune position and size.
+        var step: CGFloat = 0.02
+        for _ in 0..<2 {
+            let center = best!.corners
+            for t in [-step, step] { evaluate(center.inset(t)) }
+            for (du, dv) in [(-step, 0), (step, 0), (0, -step), (0, step)] as [(CGFloat, CGFloat)] {
+                let shift = center.point(u: 0.5 + du, v: 0.5 + dv)
+                let middle = center.point(u: 0.5, v: 0.5)
+                evaluate(center.translated(dx: shift.x - middle.x, dy: shift.y - middle.y))
+            }
+            step /= 2
+        }
+
+        guard let result = best, result.match.isConvincing else { return nil }
+        return result
     }
 
     private func closestLabeling(of quad: [CGPoint], to corners: BoardCorners) -> BoardCorners {
@@ -413,5 +529,14 @@ struct AppearanceModel {
         let weights = logits.map { exp(max($0 - top, -80)) }
         let total = weights.reduce(0, +)
         return weights.map { 0.05 + 0.9 * $0 / total }
+    }
+}
+
+extension Array where Element == Float {
+    var mean: Float { isEmpty ? 0 : reduce(0, +) / Float(count) }
+    var variance: Float {
+        guard count > 1 else { return 0 }
+        let m = mean
+        return reduce(0) { $0 + ($1 - m) * ($1 - m) } / Float(count)
     }
 }

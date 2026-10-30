@@ -24,7 +24,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Game")
                 } footer: {
-                    Text("Your colour tells the app which side of the board is nearest to you and when to speak. Recalibrate after changing it.")
+                    Text("Your colour sets which side of the board is nearest to you and when the app speaks the best move.")
                 }
 
                 Section {

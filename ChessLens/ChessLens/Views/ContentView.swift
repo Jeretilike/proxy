@@ -18,8 +18,17 @@ struct ContentView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    glassesCard
-                    gameControls
+                    Picker("Play on", selection: $game.mode) {
+                        ForEach(PlayMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if game.mode == .glasses {
+                        glassesCard
+                        gameControls
+                    } else {
+                        screenControls
+                    }
                     suggestionCard
                     boardCard
                 }
@@ -66,6 +75,7 @@ struct ContentView: View {
                 // Keep the phone awake while the glasses watch the board.
                 UIApplication.shared.isIdleTimerDisabled = streaming
             }
+            .onChange(of: playerColorRaw) { _, _ in game.playerColorChanged() }
         }
     }
 
@@ -136,11 +146,10 @@ struct ContentView: View {
             Button {
                 Task { await game.beginCalibration() }
             } label: {
-                Label(game.isCalibrated ? "Recalibrate board" : "Calibrate board", systemImage: "viewfinder")
+                Label("Set board corners by hand", systemImage: "viewfinder")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(.bordered)
             .disabled(!glasses.isStreaming)
 
             HStack {
@@ -159,13 +168,38 @@ struct ContentView: View {
             .buttonStyle(.bordered)
             .font(.footnote)
 
+            statusLine
+        }
+    }
+
+    private var screenControls: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Button { game.undo() } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity)
+                }
+                .disabled(game.history.isEmpty)
+                Button(role: .destructive) { game.newGame() } label: {
+                    Label("New game", systemImage: "plus.circle").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+
+            statusLine
+        }
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        HStack(spacing: 8) {
+            if game.state == .thinking { ProgressView() }
             Text(game.statusText)
                 .font(.footnote)
                 .foregroundStyle(isProblem ? .red : .secondary)
                 .multilineTextAlignment(.center)
-            if let event = game.lastEvent {
-                Text(event).font(.caption).foregroundStyle(.secondary)
-            }
+        }
+        if let event = game.lastEvent {
+            Text(event).font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -203,17 +237,27 @@ struct ContentView: View {
                 if let depth = game.suggestion?.depth {
                     Text("Stockfish depth \(depth)").font(.caption2).foregroundStyle(.tertiary)
                 }
-                Button { game.speakAgain() } label: {
-                    Label("Say it again", systemImage: "speaker.wave.2")
+                HStack {
+                    if game.mode == .screen && game.isPlayersTurn {
+                        Button { game.playSuggestion() } label: {
+                            Label("Play it", systemImage: "checkmark.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button { game.speakAgain() } label: {
+                        Label("Say it again", systemImage: "speaker.wave.2")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
         }
     }
 
     private var boardCard: some View {
         card {
-            Text("Game position. Tap a piece then its square to enter a move; long-press to change a piece.")
+            Text(game.mode == .screen
+                 ? "Tap a piece, then its square, to play moves for both sides. Long-press a square to change its piece."
+                 : "Game position. If a move was missed, tap the piece then its square. Long-press to change a piece.")
                 .font(.caption).foregroundStyle(.secondary)
             BoardView(
                 board: game.position.board,
