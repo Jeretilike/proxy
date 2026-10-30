@@ -153,7 +153,7 @@ final class GlassesManager {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             self?.finishPhoto(nil)
         }
-        let photo = await withCheckedContinuation { continuation in
+        let photo: UIImage? = await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
             photoContinuation = continuation
         }
         timeoutTask.cancel()

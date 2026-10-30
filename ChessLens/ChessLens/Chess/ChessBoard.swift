@@ -211,7 +211,7 @@ struct ChessBoard: Equatable {
     }
 
     func pieces(of color: PieceColor) -> [(Square, Piece)] {
-        (0..<64).compactMap { i in
+        (0..<64).compactMap { i -> (Square, Piece)? in
             guard let piece = squares[i], piece.color == color else { return nil }
             return (Square(file: i % 8, rank: i / 8)!, piece)
         }
