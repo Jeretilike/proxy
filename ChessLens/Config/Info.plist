@@ -77,10 +77,6 @@
 	<array>
 		<string>_bonjour._tcp</string>
 	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>Take a photo of a chess board with the iPhone camera to analyse it.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Pick a photo of a chess board to analyse it.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIApplicationSceneManifest</key>

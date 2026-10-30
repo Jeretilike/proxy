@@ -1,5 +1,8 @@
 name: ChessLens iOS
 
+# Builds the app on GitHub's Mac runners (no Mac or paid Apple account needed) and publishes an
+# unsigned ChessLens.ipa. Install it on the iPhone with SideStore, which signs it with a free Apple ID.
+
 on:
   push:
     paths:
@@ -10,19 +13,13 @@ on:
       - "ChessLens/**"
       - ".github/workflows/chesslens-ios.yml"
   workflow_dispatch:
-    inputs:
-      upload_to_testflight:
-        description: "Sign the app and upload it to TestFlight"
-        type: boolean
-        default: true
-      app_version:
-        description: "Version shown in TestFlight (leave empty for 1.0.0)"
-        type: string
-        required: false
 
 concurrency:
-  group: chesslens-${{ github.ref }}-${{ github.event_name }}
+  group: chesslens-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 defaults:
   run:
@@ -30,7 +27,6 @@ defaults:
 
 jobs:
   build:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight && 'Build & upload to TestFlight' || 'Build (unsigned check)' }}
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -42,7 +38,6 @@ jobs:
           echo "Using $xcode"
           sudo xcode-select -s "$xcode/Contents/Developer"
           xcodebuild -version
-          swift --version
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -53,73 +48,41 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Resolve Swift packages
-        run: xcodebuild -resolvePackageDependencies -project ChessLens.xcodeproj -scheme ChessLens
-
       - name: Build (unsigned)
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight) }}
         run: |
           xcodebuild build -quiet \
             -project ChessLens.xcodeproj \
             -scheme ChessLens \
             -configuration Release \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Check signing secrets
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight }}
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
-          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      - name: Package ChessLens.ipa
         run: |
-          missing=0
-          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_CONTENT APPLE_TEAM_ID BUNDLE_ID MATCH_GIT_URL MATCH_GIT_TOKEN MATCH_PASSWORD; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::Missing repository secret $name (see ChessLens/README.md)"
-              missing=1
-            fi
-          done
-          exit $missing
+          app=build/DerivedData/Build/Products/Release-iphoneos/ChessLens.app
+          test -d "$app"
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R "$app" build/ipa/Payload/
+          (cd build/ipa && zip -qry ../ChessLens.ipa Payload)
+          ls -lh build/ChessLens.ipa
 
-      - name: Set up Ruby
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight }}
-        uses: ruby/setup-ruby@v1
+      - uses: actions/upload-artifact@v4
         with:
-          ruby-version: "3.3"
-          bundler-cache: true
-          working-directory: ChessLens
+          name: ChessLens-ipa
+          path: ChessLens/build/ChessLens.ipa
 
-      - name: Build, sign and upload to TestFlight
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload_to_testflight }}
+      - name: Publish download link
+        if: github.event_name != 'pull_request'
         env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
-          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-          MATCH_GIT_TOKEN: ${{ secrets.MATCH_GIT_TOKEN }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          META_APP_ID: ${{ secrets.META_APP_ID }}
-          META_CLIENT_TOKEN: ${{ secrets.META_CLIENT_TOKEN }}
-          APP_VERSION: ${{ inputs.app_version }}
-          FASTLANE_SKIP_UPDATE_CHECK: "1"
-          FASTLANE_HIDE_CHANGELOG: "1"
-        run: bundle exec fastlane ios beta
-
-      - name: Upload build logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            ChessLens/build.log
-            ~/Library/Logs/gym/*.log
-          if-no-files-found: ignore
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=chesslens-latest
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" build/ChessLens.ipa \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "ChessLens (latest build)" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Download ChessLens.ipa on your iPhone and open it with SideStore (see ChessLens/README.md)."

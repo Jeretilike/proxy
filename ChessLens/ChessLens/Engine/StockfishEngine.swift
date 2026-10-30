@@ -78,7 +78,15 @@ actor StockfishEngine {
     func analyze(fen: String, movetimeMilliseconds: Int) async throws -> EngineAnalysis {
         try await start()
         guard let engine else { throw EngineError.startTimeout }
-        guard pending == nil else { throw EngineError.busy }
+        // A newer position replaces any search still running: stop it and let its bestmove
+        // arrive (its caller ignores the stale answer) so replies can't get mixed up.
+        var waited = 0
+        while pending != nil {
+            if waited % 50 == 0 { await engine.send(command: .stop) }
+            try await Task.sleep(nanoseconds: 20_000_000)
+            waited += 1
+            if waited > 500 { throw EngineError.busy }
+        }
         latestInfo = nil
 
         let timeout = UInt64(movetimeMilliseconds + 15_000) * 1_000_000

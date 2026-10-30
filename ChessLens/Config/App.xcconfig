@@ -1,5 +1,5 @@
 // Build settings for the ChessLens app target.
-// CI writes Config/Signing.local.xcconfig (git-ignored) to override signing, bundle ID and build number.
+// CI builds it unsigned; SideStore signs it with your Apple ID when installing.
 
 PRODUCT_NAME = ChessLens
 PRODUCT_BUNDLE_IDENTIFIER = com.example.chesslens
@@ -15,7 +15,6 @@ LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
 ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
 INFOPLIST_FILE = Config/Info.plist
 GENERATE_INFOPLIST_FILE = NO
-CODE_SIGN_ENTITLEMENTS = Config/ChessLens.entitlements
 CODE_SIGN_STYLE = Automatic
 ENABLE_USER_SCRIPT_SANDBOXING = YES
 
@@ -24,4 +23,3 @@ ENABLE_USER_SCRIPT_SANDBOXING = YES
 META_APP_ID = 0
 META_CLIENT_TOKEN =
 
-#include? "Signing.local.xcconfig"

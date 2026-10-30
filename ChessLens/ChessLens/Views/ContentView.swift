@@ -1,16 +1,13 @@
-import PhotosUI
 import SwiftUI
 
 struct ContentView: View {
     @Bindable var glasses: GlassesManager
-    @Bindable var analyzer: AnalyzerViewModel
+    @Bindable var game: GameViewModel
 
     @AppStorage(SettingsKey.handsFree) private var handsFree = true
     @AppStorage(SettingsKey.playerColor) private var playerColorRaw = PieceColor.white.rawValue
 
     @State private var showSettings = false
-    @State private var showCamera = false
-    @State private var photoItem: PhotosPickerItem?
     @State private var editingSquare: Square?
     @State private var showFENEditor = false
     @State private var fenDraft = ""
@@ -22,8 +19,8 @@ struct ContentView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     glassesCard
-                    analyzeControls
-                    resultCard
+                    gameControls
+                    suggestionCard
                     boardCard
                 }
                 .padding()
@@ -36,9 +33,11 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView(glasses: glasses) }
-            .fullScreenCover(isPresented: $showCamera) {
-                CameraPicker { image in Task { await analyzer.analyze(image: image) } }
-                    .ignoresSafeArea()
+            .sheet(isPresented: Binding(
+                get: { game.calibration != nil },
+                set: { if !$0 { game.calibration = nil } }
+            )) {
+                CalibrationView(game: game)
             }
             .sheet(isPresented: $showFENEditor) { fenEditor }
             .confirmationDialog(
@@ -48,11 +47,11 @@ struct ContentView: View {
             ) {
                 ForEach(Piece.all, id: \.self) { piece in
                     Button("\(piece.symbol) \(piece.color.displayName) \(piece.kind.name.lowercased())") {
-                        if let square = editingSquare { analyzer.setPiece(piece, at: square) }
+                        if let square = editingSquare { game.setPiece(piece, at: square) }
                     }
                 }
                 Button("Empty square", role: .destructive) {
-                    if let square = editingSquare { analyzer.setPiece(nil, at: square) }
+                    if let square = editingSquare { game.setPiece(nil, at: square) }
                 }
             }
             .alert("Glasses", isPresented: Binding(
@@ -63,21 +62,10 @@ struct ContentView: View {
             } message: {
                 Text(glasses.errorMessage ?? "")
             }
-            .onChange(of: photoItem) { _, item in
-                guard let item else { return }
-                Task {
-                    if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) {
-                        await analyzer.analyze(image: image)
-                    }
-                    photoItem = nil
-                }
-            }
             .onChange(of: glasses.isStreaming) { _, streaming in
-                // Keep the phone awake while the glasses feed hands-free analysis.
+                // Keep the phone awake while the glasses watch the board.
                 UIApplication.shared.isIdleTimerDisabled = streaming
-                if streaming { analyzer.resetHandsFree() }
             }
-            .onChange(of: playerColorRaw) { _, _ in analyzer.resetHandsFree() }
         }
     }
 
@@ -86,8 +74,7 @@ struct ContentView: View {
     private var glassesCard: some View {
         card {
             HStack {
-                Image(systemName: "eyeglasses")
-                    .font(.title2)
+                Image(systemName: "eyeglasses").font(.title2)
                 VStack(alignment: .leading) {
                     Text("Ray-Ban Meta").font(.headline)
                     Text(glasses.statusText).font(.subheadline).foregroundStyle(.secondary)
@@ -100,7 +87,8 @@ struct ContentView: View {
                 Image(uiImage: frame)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxHeight: 220)
+                    .overlay { boardOutline }
+                    .frame(maxHeight: 240)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
             }
 
@@ -123,78 +111,99 @@ struct ContentView: View {
                 .disabled(glasses.isBusy)
             }
 
-            Toggle("Hands-free: speak the best move automatically", isOn: $handsFree)
+            Toggle("Hands-free: follow moves and speak", isOn: $handsFree)
                 .font(.subheadline)
         }
     }
 
-    private var analyzeControls: some View {
-        VStack(spacing: 10) {
-            Button {
-                Task { await analyzer.analyzeFromGlasses() }
-            } label: {
-                Label("Analyze from glasses", systemImage: "sparkle.magnifyingglass")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!glasses.isStreaming || analyzer.isWorking)
-
-            HStack {
-                Button { showCamera = true } label: {
-                    Label("iPhone camera", systemImage: "camera").frame(maxWidth: .infinity)
+    /// The tracked board outline drawn over the live preview.
+    private var boardOutline: some View {
+        GeometryReader { geo in
+            if let corners = game.corners {
+                Path { path in
+                    let points = corners.points.map { CGPoint(x: $0.x * geo.size.width, y: $0.y * geo.size.height) }
+                    path.move(to: points[0])
+                    points.dropFirst().forEach { path.addLine(to: $0) }
+                    path.closeSubpath()
                 }
-                .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Label("Photo", systemImage: "photo").frame(maxWidth: .infinity)
-                }
-            }
-            .buttonStyle(.bordered)
-            .disabled(analyzer.isWorking)
-
-            HStack(spacing: 8) {
-                if analyzer.isWorking { ProgressView() }
-                Text(analyzer.statusText)
-                    .font(.footnote)
-                    .foregroundStyle(isFailure ? .red : .secondary)
-                    .multilineTextAlignment(.center)
+                .stroke(Color.yellow, lineWidth: 2)
             }
         }
     }
 
-    private var isFailure: Bool {
-        if case .failed = analyzer.phase { return true }
-        return false
+    private var gameControls: some View {
+        VStack(spacing: 10) {
+            Button {
+                Task { await game.beginCalibration() }
+            } label: {
+                Label(game.isCalibrated ? "Recalibrate board" : "Calibrate board", systemImage: "viewfinder")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(!glasses.isStreaming)
+
+            HStack {
+                Button { game.checkNow() } label: {
+                    Label("Check now", systemImage: "eye").frame(maxWidth: .infinity)
+                }
+                .disabled(!game.isCalibrated || !glasses.isStreaming)
+                Button { game.undo() } label: {
+                    Label("Undo", systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity)
+                }
+                .disabled(game.history.isEmpty)
+                Button(role: .destructive) { game.newGame() } label: {
+                    Label("New game", systemImage: "plus.circle").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .font(.footnote)
+
+            Text(game.statusText)
+                .font(.footnote)
+                .foregroundStyle(isProblem ? .red : .secondary)
+                .multilineTextAlignment(.center)
+            if let event = game.lastEvent {
+                Text(event).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var isProblem: Bool {
+        switch game.state {
+        case .lost, .unsure: return true
+        default: return false
+        }
     }
 
     @ViewBuilder
-    private var resultCard: some View {
-        if let best = analyzer.bestMoveText {
+    private var suggestionCard: some View {
+        if let best = game.suggestionText {
             card {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Best move for \(analyzer.sideToMove.displayName)")
+                        Text("Best move for \(game.position.sideToMove.displayName)")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(best).font(.system(size: 40, weight: .bold, design: .rounded))
-                        if let spoken = analyzer.spokenMoveText {
+                        if let spoken = game.spokenSuggestion {
                             Text(spoken).font(.subheadline)
                         }
                     }
                     Spacer()
-                    if let eval = analyzer.evaluationText {
+                    if let eval = game.evaluationText {
                         Text(eval)
                             .font(.title3.monospacedDigit().weight(.semibold))
                             .padding(.horizontal, 10).padding(.vertical, 6)
                             .background(.thinMaterial, in: Capsule())
                     }
                 }
-                if let line = analyzer.lineText {
+                if let line = game.lineText {
                     Text("Line: \(line)").font(.footnote).foregroundStyle(.secondary)
                 }
-                if let depth = analyzer.analysis?.depth {
+                if let depth = game.suggestion?.depth {
                     Text("Stockfish depth \(depth)").font(.caption2).foregroundStyle(.tertiary)
                 }
-                Button { analyzer.speakAgain() } label: {
+                Button { game.speakAgain() } label: {
                     Label("Say it again", systemImage: "speaker.wave.2")
                 }
                 .buttonStyle(.bordered)
@@ -202,47 +211,37 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
     private var boardCard: some View {
-        if let board = analyzer.board {
-            card {
-                Text("Recognized position — tap a square to fix it")
-                    .font(.caption).foregroundStyle(.secondary)
-                BoardView(
-                    board: board,
-                    bottomColor: playerColor,
-                    highlight: analyzer.analysis.flatMap { UCIMove($0.bestMove) },
-                    onTap: { editingSquare = $0 }
-                )
-                HStack {
-                    Button { analyzer.toggleSideToMove() } label: {
-                        Label("\(analyzer.sideToMove.displayName) to move", systemImage: "arrow.left.arrow.right")
-                    }
-                    Spacer()
-                    Button { analyzer.rotateBoard() } label: {
-                        Label("Rotate", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    Button {
-                        fenDraft = analyzer.fen ?? ""
-                        showFENEditor = true
-                    } label: {
-                        Label("FEN", systemImage: "square.and.pencil")
-                    }
+        card {
+            Text("Game position. Tap a piece then its square to enter a move; long-press to change a piece.")
+                .font(.caption).foregroundStyle(.secondary)
+            BoardView(
+                board: game.position.board,
+                bottomColor: playerColor,
+                highlight: game.suggestion.flatMap { UCIMove($0.bestMove) },
+                selected: game.selectedSquare,
+                onTap: { game.tap($0) },
+                onLongPress: { editingSquare = $0 }
+            )
+            HStack {
+                Button { game.toggleSideToMove() } label: {
+                    Label("\(game.position.sideToMove.displayName) to move", systemImage: "arrow.left.arrow.right")
                 }
-                .buttonStyle(.bordered)
-                .font(.footnote)
-                .disabled(analyzer.isWorking)
+                Spacer()
+                Button {
+                    fenDraft = game.position.fen
+                    showFENEditor = true
+                } label: {
+                    Label("FEN", systemImage: "square.and.pencil")
+                }
+            }
+            .buttonStyle(.bordered)
+            .font(.footnote)
 
-                if !analyzer.recognitionNotes.isEmpty {
-                    Text(analyzer.recognitionNotes).font(.caption).foregroundStyle(.secondary)
-                }
-                if let photo = analyzer.photo {
-                    DisclosureGroup("Photo used") {
-                        Image(uiImage: photo).resizable().scaledToFit()
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .font(.footnote)
-                }
+            if !game.moveLog.isEmpty {
+                Text(game.moveLog.joined(separator: " "))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -256,7 +255,7 @@ struct ContentView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } footer: {
-                    Text("Edit the position directly, then tap Apply to re-run Stockfish.")
+                    Text("Paste or edit a position. After changing the board, the app re-anchors on the current camera view.")
                 }
             }
             .navigationTitle("Position (FEN)")
@@ -265,7 +264,7 @@ struct ContentView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { showFENEditor = false } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Apply") {
-                        analyzer.applyFEN(fenDraft)
+                        game.applyFEN(fenDraft)
                         showFENEditor = false
                     }
                 }

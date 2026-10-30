@@ -92,16 +92,34 @@ struct Square: Hashable {
         self.rank = Int(r) - 49
     }
 
+    /// `index` is `rank * 8 + file`, 0...63.
+    init(index: Int) {
+        file = index % 8
+        rank = index / 8
+    }
+
     var index: Int { rank * 8 + file }
+    var isLight: Bool { (file + rank) % 2 == 1 }
     var algebraic: String { "\(Character(UnicodeScalar(UInt8(97 + file))))\(rank + 1)" }
 
     func offset(_ df: Int, _ dr: Int) -> Square? { Square(file: file + df, rank: rank + dr) }
 }
 
-struct UCIMove: Equatable {
+struct UCIMove: Hashable {
     let from: Square
     let to: Square
     let promotion: PieceKind?
+
+    init(from: Square, to: Square, promotion: PieceKind? = nil) {
+        self.from = from
+        self.to = to
+        self.promotion = promotion
+    }
+
+    /// Long algebraic notation as used by UCI engines, e.g. "e2e4" or "e7e8q".
+    var uci: String {
+        from.algebraic + to.algebraic + (promotion.map { String($0.rawValue) } ?? "")
+    }
 
     init?(_ text: String) {
         let s = Substring(text)
@@ -203,17 +221,10 @@ struct ChessBoard: Equatable {
         "\(placementFEN) \(sideToMove.fenLetter) \(inferredCastlingRights) - 0 1"
     }
 
-    /// The board rotated 180°, for when the photo was read from the wrong side.
-    var rotated: ChessBoard {
-        var copy = ChessBoard()
-        for i in 0..<64 { copy.squares[63 - i] = squares[i] }
-        return copy
-    }
-
     func pieces(of color: PieceColor) -> [(Square, Piece)] {
         (0..<64).compactMap { i -> (Square, Piece)? in
             guard let piece = squares[i], piece.color == color else { return nil }
-            return (Square(file: i % 8, rank: i / 8)!, piece)
+            return (Square(index: i), piece)
         }
     }
 
@@ -342,23 +353,5 @@ struct ChessBoard: Equatable {
         }
         if let promo = move.promotion { text += ", promote to \(promo.name.lowercased())" }
         return text + check
-    }
-
-    /// Guesses who just moved by comparing with an earlier position: the colour whose
-    /// pieces arrived on new squares. Returns nil when the change is unclear.
-    func colorThatMoved(since previous: ChessBoard) -> PieceColor? {
-        var arrived: [PieceColor: Int] = [:]
-        var changed = 0
-        for i in 0..<64 where squares[i] != previous.squares[i] {
-            changed += 1
-            if let piece = squares[i] { arrived[piece.color, default: 0] += 1 }
-        }
-        // A normal move changes 2 squares, castling 4, en passant 3. More means a misread.
-        guard (2...4).contains(changed) else { return nil }
-        let white = arrived[.white, default: 0]
-        let black = arrived[.black, default: 0]
-        if white > 0 && black == 0 { return .white }
-        if black > 0 && white == 0 { return .black }
-        return nil
     }
 }

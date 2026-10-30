@@ -4,7 +4,7 @@ import SwiftUI
 @main
 struct ChessLensApp: App {
     @State private var glasses: GlassesManager
-    @State private var analyzer: AnalyzerViewModel
+    @State private var game: GameViewModel
 
     init() {
         AppSettings.registerDefaults()
@@ -15,12 +15,12 @@ struct ChessLensApp: App {
         }
         let glasses = GlassesManager()
         _glasses = State(initialValue: glasses)
-        _analyzer = State(initialValue: AnalyzerViewModel(glasses: glasses))
+        _game = State(initialValue: GameViewModel(glasses: glasses))
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView(glasses: glasses, analyzer: analyzer)
+            ContentView(glasses: glasses, game: game)
                 .onOpenURL { glasses.handle(url: $0) }
                 .task {
                     // Load Stockfish and its networks up front so the first answer is quick.

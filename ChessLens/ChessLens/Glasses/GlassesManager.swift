@@ -14,7 +14,6 @@ final class GlassesManager {
     var streamState: StreamState = .stopped
     var latestFrame: UIImage?
     var errorMessage: String?
-    var isCapturingPhoto = false
 
     var isRegistered: Bool { registrationState == .registered }
     var isStreaming: Bool { streamState == .streaming }
@@ -46,7 +45,6 @@ final class GlassesManager {
     @ObservationIgnored private var camera: MWDATCamera.Camera?
     @ObservationIgnored private let sessionTokens = ListenerTokenBag()
     @ObservationIgnored private let streamTokens = ListenerTokenBag()
-    @ObservationIgnored private var photoContinuation: CheckedContinuation<UIImage?, Never>?
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
 
     init(wearables: WearablesInterface = Wearables.shared) {
@@ -119,9 +117,9 @@ final class GlassesManager {
                     return
                 }
             }
-            // Raw frames decode straight to UIImage. Medium resolution keeps per-frame quality
-            // high over Bluetooth; analysis uses a full photo when possible.
-            let config = StreamConfiguration(videoCodec: .raw, resolution: .medium, frameRate: 15)
+            // Raw frames decode straight to UIImage. The SDK lowers resolution by itself if
+            // Bluetooth bandwidth runs short; board tracking copes with that.
+            let config = StreamConfiguration(videoCodec: .raw, resolution: .high, frameRate: 15)
             guard let camera = try session.addCamera(config: config) else {
                 errorMessage = "Couldn't open the glasses camera. Try again."
                 return
@@ -139,31 +137,6 @@ final class GlassesManager {
         guard let camera else { return }
         streamState = .stopping
         camera.stop()
-    }
-
-    /// Takes a still with the glasses camera (sharper than a stream frame). Falls back to the
-    /// latest stream frame if the photo doesn't arrive within `timeout` seconds.
-    func capturePhoto(timeout: TimeInterval = 8) async -> UIImage? {
-        guard let camera, isStreaming, !isCapturingPhoto else { return latestFrame }
-        isCapturingPhoto = true
-        defer { isCapturingPhoto = false }
-        guard camera.stream.capturePhoto(format: .jpeg) else { return latestFrame }
-
-        let timeoutTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            self?.finishPhoto(nil)
-        }
-        let photo: UIImage? = await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
-            photoContinuation = continuation
-        }
-        timeoutTask.cancel()
-        return photo ?? latestFrame
-    }
-
-    private func finishPhoto(_ image: UIImage?) {
-        guard let continuation = photoContinuation else { return }
-        photoContinuation = nil
-        continuation.resume(returning: image)
     }
 
     // MARK: Session
@@ -220,20 +193,8 @@ final class GlassesManager {
             }
         }.store(in: streamTokens)
 
-        stream.photoDataPublisher.listen { [weak self] photo in
-            let image = UIImage(data: photo.data)
-            Task { @MainActor in self?.finishPhoto(image) }
-        }.store(in: streamTokens)
-
         stream.errorPublisher.listen { [weak self] error in
-            Task { @MainActor in
-                guard let self else { return }
-                if error == .photoCaptureFailed {
-                    self.finishPhoto(nil)
-                } else {
-                    self.errorMessage = error.localizedDescription
-                }
-            }
+            Task { @MainActor in self?.errorMessage = error.localizedDescription }
         }.store(in: streamTokens)
     }
 
@@ -248,7 +209,6 @@ final class GlassesManager {
         camera = nil
         streamState = .stopped
         latestFrame = nil
-        finishPhoto(nil)
     }
 }
 

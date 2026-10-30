@@ -2,10 +2,6 @@
 ChessLens.xcodeproj/
 # Downloaded by scripts/download-nnue.sh (too large for git)
 ChessLens/Resources/NNUE/*.nnue
-# Written by CI
-Config/Signing.local.xcconfig
+# Build output
 build/
-fastlane/report.xml
-fastlane/README.md
 *.ipa
-*.dSYM.zip
