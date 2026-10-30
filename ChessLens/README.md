@@ -15,14 +15,14 @@ glasses camera ─► board found & aligned ─► which squares changed? ─►
 
 The app doesn't try to recognise pieces from scratch. It **follows the game from a known position**:
 
-1. **Find the board (automatic).** With the pieces in the starting position (or the position shown in the app), look at the board. The app tries every rectangle the camera sees, in every orientation and stepped in from the board's outer frame. It keeps the fit that looks like a chessboard in that position: light and dark squares alternating, pieces where pieces should be, White pieces lighter than Black. Two frames in a row must agree, then it says *"Board found"*. If it loses the board later, it finds it again the same way. You can still place the corners by hand if needed.
+1. **Find the board (automatic).** The app looks for the **corners where four squares meet**: the 7×7 grid inside every chessboard. Around each such corner the brightness alternates light/dark/light/dark, which piece outlines, the board's border and wood grain don't do. It fits the 8×8 grid to those corners, so the board's outer edge doesn't need to be visible. The same works for a wooden board, a vinyl board, or a chess.com board on a computer, TV or tablet screen. Of the grid's possible 8×8 windows and orientations, it keeps the one that matches the position shown in the app. Two frames in a row must agree (the preview shows the grid in orange, then green), then it says *"Board found"*. If it loses the board later, it finds it again the same way. You can still place the corners by hand if needed.
 2. **Watch.** Whenever your view holds still for about a second, the app aligns the new frame with the last confirmed view (your head moves). It warps the board to a top-down image and measures how much each of the 64 squares changed.
 3. **Match a legal move.** It tries every legal move, and every move-plus-reply in case you looked away while both were played. It picks the one whose changed squares fit what the camera saw. It also uses a simple empty / White / Black guess per square. A move is only accepted if a second frame agrees.
 4. **Speak.** After your opponent's move it says something like *"Opponent: knight g8 to f6. Play bishop f1 to b5."* After your own move it stays quiet.
 
 If it can't tell what happened, it says *"I didn't catch that move"*. You can then tap the move on the phone, and long-press any square to fix a piece.
 
-> **Status: glasses mode is untested on real glasses.** The move-matching logic and the automatic board finder were checked in simulation, and the move generator against standard chess test positions (perft). The camera side (finding and following the board with a head-mounted camera, lighting, how pieces cover each other) has not been tried on real hardware yet. Expect to tune it. Screen mode doesn't depend on the camera.
+> **Status: glasses mode is untested on real glasses.** The board finder was prototyped and tested on 30 real photos of boards (wooden, vinyl, tournament and on-screen boards). It placed the grid correctly on most of them. The misses were folding boards bent at the hinge, plus cases off by one rank that the app's position check is meant to resolve. On 200 synthetic chess.com-style and wooden boards at random angles with clutter, it got 199 right. The move-matching logic was checked in simulation, and the move generator against standard chess test positions (perft). The camera side (finding and following the board with a head-mounted camera, lighting, how pieces cover each other) has not been tried on real hardware yet. Expect to tune it. Screen mode doesn't depend on the camera.
 
 ---
 
@@ -96,7 +96,7 @@ Tips:
 | Rules: legal moves, FEN, move wording | `ChessLens/Chess/ChessPosition.swift`, `ChessLens/Chess/ChessBoard.swift` |
 | Stockfish | `ChessLens/Engine/StockfishEngine.swift` (ChessKitEngine 0.7.0) |
 | Game flow, speech, corrections | `ChessLens/ViewModels/GameViewModel.swift` |
-| Automatic board finding | `locateBoard` / `boardMatch` in `ChessLens/Vision/BoardTracker.swift` |
+| Automatic board finding (grid of square corners) | `ChessLens/Vision/ChessGridDetector.swift`, plus `locateBoard` / `boardMatch` in `BoardTracker.swift` |
 | Manual corner screen (fallback) | `ChessLens/Views/CalibrationView.swift` |
 | Project definition | `project.yml` (XcodeGen), `Config/` |
 | CI build and download | `.github/workflows/chesslens-ios.yml` |
@@ -108,7 +108,7 @@ Stockfish's neural network files (~75 MB) are downloaded during the build by `sc
 ## Troubleshooting
 
 - **Glasses don't connect:** check Developer Mode (step 1), that the glasses are unfolded and connected in Meta AI, and that Bluetooth is on.
-- **Board never found:** make sure the pieces match the position shown in the app, the whole board is in view, and the light is even. Otherwise use **Set board corners by hand**.
+- **Board never found:** make sure the pieces match the position shown in the app and the whole board is in view. For a screen, reduce glare and keep the board large in your view. A folding board that doesn't lie flat at the hinge can confuse it. Otherwise use **Set board corners by hand**.
 - **"Board not found" during a game:** look at the whole board for a moment; it searches again automatically.
 - **Moves aren't noticed:** hold your head still for about a second after a move, keep hands off the board, and try **Check now**.
 - **Wrong move detected:** tap **Undo**, then tap the right move on the phone.

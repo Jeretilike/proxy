@@ -42,6 +42,8 @@ final class GameViewModel {
     var selectedSquare: Square?
     /// Where the board is in the latest checked frame (unit coordinates), for the preview overlay.
     var corners: BoardCorners?
+    /// A board found but not yet confirmed by a second frame (shown in orange on the preview).
+    var searchOutline: BoardCorners?
     var calibration: CalibrationDraft?
 
     let glasses: GlassesManager
@@ -131,6 +133,7 @@ final class GameViewModel {
     private func modeDidChange() {
         selectedSquare = nil
         candidateCorners = nil
+        searchOutline = nil
         state = idleState
         positionChanged(announcement: nil, speak: false)
     }
@@ -183,6 +186,7 @@ final class GameViewModel {
         selectedSquare = nil
         corners = nil
         candidateCorners = nil
+        searchOutline = nil
         state = idleState
         Task { await tracker.reset() }
         // On screen, start right away (if you're White the first move is spoken). With the
@@ -294,13 +298,16 @@ final class GameViewModel {
         let board = position.board
         guard let found = await tracker.locateBoard(in: image, board: board, playerColor: playerColor) else {
             candidateCorners = nil
+            searchOutline = nil
             return
         }
         guard let previous = candidateCorners, previous.distance(to: found.corners) < 0.04 else {
             candidateCorners = found.corners
+            searchOutline = found.corners
             return
         }
         candidateCorners = nil
+        searchOutline = nil
         guard !isCalibrated, calibration == nil, mode == .glasses, position.board == board,
               await tracker.calibrate(frame: image, corners: found.corners, board: board)
         else { return }

@@ -127,16 +127,25 @@ struct ContentView: View {
     }
 
     /// The tracked board outline drawn over the live preview.
+    /// The board's 8×8 grid drawn over the live preview: green while tracking, orange while the
+    /// app is still confirming a board it just found.
     private var boardOutline: some View {
         GeometryReader { geo in
-            if let corners = game.corners {
+            if let corners = game.corners ?? game.searchOutline {
                 Path { path in
-                    let points = corners.points.map { CGPoint(x: $0.x * geo.size.width, y: $0.y * geo.size.height) }
-                    path.move(to: points[0])
-                    points.dropFirst().forEach { path.addLine(to: $0) }
-                    path.closeSubpath()
+                    func point(_ u: CGFloat, _ v: CGFloat) -> CGPoint {
+                        let p = corners.point(u: u, v: v)
+                        return CGPoint(x: p.x * geo.size.width, y: p.y * geo.size.height)
+                    }
+                    for k in 0...8 {
+                        let t = CGFloat(k) / 8
+                        path.move(to: point(t, 0))
+                        path.addLine(to: point(t, 1))
+                        path.move(to: point(0, t))
+                        path.addLine(to: point(1, t))
+                    }
                 }
-                .stroke(Color.yellow, lineWidth: 2)
+                .stroke(game.corners != nil ? Color.green : Color.orange, lineWidth: 1.5)
             }
         }
     }

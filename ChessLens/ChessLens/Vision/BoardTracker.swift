@@ -199,9 +199,9 @@ actor BoardTracker {
         }
         candidates.forEach(evaluate)
 
-        // Lost (the wearer looked far away and back): find the board from scratch, but still
+        // Poor fit (the wearer looked far away and back): find the board from scratch, but still
         // compare with the last confirmed view so a move made meanwhile isn't missed.
-        if (best?.error ?? .infinity) > Self.lostThreshold,
+        if (best?.error ?? .infinity) > Self.lostThreshold / 2,
            let found = locateBoard(in: frame, board: target.board, playerColor: .white) {
             evaluate(found.corners)
         }
@@ -333,8 +333,10 @@ actor BoardTracker {
         return min(max((a.mean - b.mean) / max(pooled, 0.02), -3), 6)
     }
 
-    /// Finds the board without help: tries each rectangle Vision sees, in every orientation and
-    /// stepped in from an outer frame, and keeps the fit that looks most like `board`.
+    /// Finds the board without help. First from its grid of square corners (precise, works on
+    /// screens and real boards, doesn't need the board's edge); every 8×8 window of the grid is
+    /// tried in all four orientations and the one that looks most like `board` wins. If no grid is
+    /// found, falls back to rectangles Vision sees around the board.
     func locateBoard(in frame: CGImage, board: ChessBoard, playerColor: PieceColor) -> (corners: BoardCorners, match: BoardMatch)? {
         var best: (corners: BoardCorners, match: BoardMatch)?
         func evaluate(_ corners: BoardCorners) {
@@ -342,6 +344,12 @@ actor BoardTracker {
             let match = Self.boardMatch(pixels, board: board)
             if best == nil || match.total > best!.match.total { best = (corners, match) }
         }
+
+        for outline in ChessGridDetector.boardOutlines(in: frame).prefix(12) {
+            let corners = BoardCorners(Self.counterClockwise(outline))
+            for turn in 0..<4 { evaluate(corners.rotated(turn)) }
+        }
+        if let result = best, result.match.isConvincing { return result }
 
         for quad in detectQuadrilaterals(in: frame).prefix(6) {
             let seated = BoardCorners.seated(quad, playerColor: playerColor)
@@ -368,6 +376,17 @@ actor BoardTracker {
 
         guard let result = best, result.match.isConvincing else { return nil }
         return result
+    }
+
+    /// Orders a quadrilateral like a1, h1, h8, a8 seen from either player's seat (counter-clockwise
+    /// on screen), so labelling it never mirrors the board.
+    private static func counterClockwise(_ quad: [CGPoint]) -> [CGPoint] {
+        var area: CGFloat = 0
+        for i in 0..<4 {
+            let p = quad[i], q = quad[(i + 1) % 4]
+            area += p.x * q.y - q.x * p.y
+        }
+        return area > 0 ? [quad[0], quad[3], quad[2], quad[1]] : quad
     }
 
     private func closestLabeling(of quad: [CGPoint], to corners: BoardCorners) -> BoardCorners {
