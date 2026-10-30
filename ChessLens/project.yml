@@ -1,0 +1,36 @@
+name: ChessLens
+options:
+  deploymentTarget:
+    iOS: "17.2"
+  # Only project-level defaults; the app target's settings come from Config/App.xcconfig
+  # so CI can override signing there without touching Swift package targets.
+  settingPresets: project
+  createIntermediateGroups: true
+
+packages:
+  MetaWearablesDAT:
+    url: https://github.com/facebook/meta-wearables-dat-ios
+    exactVersion: 1.0.1
+  ChessKitEngine:
+    url: https://github.com/chesskit-app/chesskit-engine
+    exactVersion: 0.7.0
+
+targets:
+  ChessLens:
+    type: application
+    platform: iOS
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: Config/App.xcconfig
+    sources:
+      - path: ChessLens
+      - path: Config
+        buildPhase: none
+    dependencies:
+      - package: MetaWearablesDAT
+        product: MWDATCore
+      - package: MetaWearablesDAT
+        product: MWDATCamera
+      - package: ChessKitEngine
+        product: ChessKitEngine
+    scheme: {}

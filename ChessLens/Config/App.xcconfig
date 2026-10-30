@@ -1,0 +1,27 @@
+// Build settings for the ChessLens app target.
+// CI writes Config/Signing.local.xcconfig (git-ignored) to override signing, bundle ID and build number.
+
+PRODUCT_NAME = ChessLens
+PRODUCT_BUNDLE_IDENTIFIER = com.example.chesslens
+MARKETING_VERSION = 1.0.0
+CURRENT_PROJECT_VERSION = 1
+
+SDKROOT = iphoneos
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+TARGETED_DEVICE_FAMILY = 1
+IPHONEOS_DEPLOYMENT_TARGET = 17.2
+SWIFT_VERSION = 5.0
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+INFOPLIST_FILE = Config/Info.plist
+GENERATE_INFOPLIST_FILE = NO
+CODE_SIGN_ENTITLEMENTS = Config/ChessLens.entitlements
+CODE_SIGN_STYLE = Automatic
+ENABLE_USER_SCRIPT_SANDBOXING = YES
+
+// Meta Wearables: 0 = Developer Mode. Set real values from the Wearables Developer Center
+// when publishing beyond your own glasses.
+META_APP_ID = 0
+META_CLIENT_TOKEN =
+
+#include? "Signing.local.xcconfig"
