@@ -96,7 +96,8 @@ struct BoardCorners: Equatable {
 enum TrackerResult {
     case notCalibrated
     case lost
-    case observed(SquareObservation, BoardCorners)
+    /// `mismatches`: squares (indices) that clearly don't look like what the game says is on them.
+    case observed(SquareObservation, BoardCorners, mismatches: [Int])
 }
 
 /// Keeps a reference view of the board and compares new frames with it square by square.
@@ -150,15 +151,78 @@ actor BoardTracker {
         return true
     }
 
-    /// Aligns `frame` with the reference and reports how each square changed.
-    func observe(_ frame: CGImage) -> TrackerResult {
+    /// Aligns `frame` with the reference, reports how each square changed, and checks every
+    /// square against the last confirmed position.
+    func observe(_ frame: CGImage, playerColor: PieceColor) -> TrackerResult {
         guard let reference else { return .notCalibrated }
         guard let view = align(frame, to: reference) else { return .lost }
         pending = view
         let differences = Self.differences(reference.view.pixels, view.pixels)
         let features = Self.features(view.pixels)
         let contents = (0..<64).map { reference.model.probabilities(features[$0], light: Square(index: $0).isLight) }
-        return .observed(SquareObservation(differences: differences, contents: contents), view.corners)
+        let mismatches = Self.mismatchedSquares(features, board: reference.board, playerColor: playerColor)
+        return .observed(SquareObservation(differences: differences, contents: contents), view.corners,
+                         mismatches: mismatches)
+    }
+
+    /// Squares that clearly disagree with `board`, judged within this one view: an "empty" square
+    /// as textured as the occupied ones, an "occupied" square as plain as the empty ones, or a
+    /// piece whose brightness matches the other colour. Empty squares just beyond a piece (from
+    /// the wearer's seat) are skipped, since a tall piece's silhouette covers them.
+    static func mismatchedSquares(_ features: [SIMD4<Float>], board: ChessBoard, playerColor: PieceColor) -> [Int] {
+        let away = playerColor == .white ? 1 : -1
+        var shadowed = Set<Int>()
+        for index in 0..<64 where board.squares[index] != nil {
+            let square = Square(index: index)
+            for step in 1...2 {
+                if let behind = square.offset(0, away * step) { shadowed.insert(behind.index) }
+            }
+        }
+
+        let luminance = features.map { 0.299 * $0.x + 0.587 * $0.y + 0.114 * $0.z }
+        var emptyTexture: [Float] = [], occupiedTexture: [Float] = []
+        var emptyLight: [Float] = [], emptyDark: [Float] = []
+        for index in 0..<64 {
+            if board.squares[index] == nil {
+                if !shadowed.contains(index) { emptyTexture.append(features[index].w) }
+                if Square(index: index).isLight { emptyLight.append(luminance[index]) } else { emptyDark.append(luminance[index]) }
+            } else {
+                occupiedTexture.append(features[index].w)
+            }
+        }
+        guard emptyTexture.count >= 4, occupiedTexture.count >= 2 else { return [] }
+
+        var flagged: [Int] = []
+        let plain = emptyTexture.median, busy = occupiedTexture.median
+        let textureGap = busy - plain
+        if textureGap > 0.02 {
+            for index in 0..<64 {
+                let texture = features[index].w
+                if board.squares[index] == nil {
+                    if !shadowed.contains(index), texture > busy - 0.15 * textureGap { flagged.append(index) }
+                } else if texture < plain + 0.15 * textureGap {
+                    flagged.append(index)
+                }
+            }
+        }
+
+        // Piece colour: brightness relative to empty squares of the same shade.
+        let lightBase = emptyLight.median, darkBase = emptyDark.median
+        var white: [(Int, Float)] = [], black: [(Int, Float)] = []
+        for index in 0..<64 {
+            guard let piece = board.squares[index], !flagged.contains(index) else { continue }
+            let residual = luminance[index] - (Square(index: index).isLight ? lightBase : darkBase)
+            if piece.color == .white { white.append((index, residual)) } else { black.append((index, residual)) }
+        }
+        if white.count >= 2, black.count >= 2 {
+            let whiteLevel = white.map { $0.1 }.median, blackLevel = black.map { $0.1 }.median
+            let colourGap = whiteLevel - blackLevel
+            if colourGap > 0.05 {
+                flagged += white.filter { $0.1 < blackLevel + 0.15 * colourGap }.map { $0.0 }
+                flagged += black.filter { $0.1 > whiteLevel - 0.15 * colourGap }.map { $0.0 }
+            }
+        }
+        return flagged.sorted()
     }
 
     /// Makes the last observed frame the new reference, showing `board`.

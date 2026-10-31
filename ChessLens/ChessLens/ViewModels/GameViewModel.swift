@@ -111,6 +111,11 @@ final class GameViewModel {
     @ObservationIgnored private var isLocating = false
     @ObservationIgnored private var lastLocateAttempt = Date.distantPast
     @ObservationIgnored private var candidateCorners: BoardCorners?
+    @ObservationIgnored private var lastCheckStarted = Date.distantPast
+    /// Squares that disagreed with the game in the previous check.
+    @ObservationIgnored private var previousMismatches: Set<Int> = []
+    /// Squares that disagreed in two checks in a row (shown on screen).
+    var mismatchedSquares: [Square] = []
 
     /// What to show when nothing is happening.
     private var idleState: TrackingState { mode == .screen || isCalibrated ? .watching : .notCalibrated }
@@ -274,7 +279,10 @@ final class GameViewModel {
         let now = Date()
         guard now.timeIntervalSince(lastFrameCheck) >= 0.25 else { return }
         lastFrameCheck = now
-        guard sceneDetector.shouldAnalyze(frame, now: now) else { return }
+        // Check as soon as the view settles after movement, and in any case every few seconds.
+        let settled = sceneDetector.shouldAnalyze(frame, now: now)
+        let due = now.timeIntervalSince(lastCheckStarted) >= AppSettings.checkIntervalSeconds
+        guard settled || due else { return }
         sceneDetector.markAnalyzed(frame, now: now)
         Task { await check(frame) }
     }
@@ -327,6 +335,7 @@ final class GameViewModel {
     private func check(_ frame: UIImage) async {
         guard let image = frame.uprightCGImage() else { return }
         isChecking = true
+        lastCheckStarted = Date()
         defer { isChecking = false }
 
         let startPosition = position
@@ -350,7 +359,7 @@ final class GameViewModel {
 
     /// Aligns the frame and runs move detection off the main thread. Nil when the board wasn't found.
     private func observe(_ image: CGImage, from start: ChessPosition) async -> MoveDetection? {
-        switch await tracker.observe(image) {
+        switch await tracker.observe(image, playerColor: playerColor) {
         case .notCalibrated:
             return nil
         case .lost:
@@ -358,14 +367,28 @@ final class GameViewModel {
             state = .lost
             if lostCount == 4 { warn("I lost the board. Look at the whole board.") }
             return nil
-        case .observed(let observation, let newCorners):
+        case .observed(let observation, let newCorners, let mismatches):
             lostCount = 0
             corners = newCorners
             if state == .lost { state = idleState }
+            reportMismatches(Set(mismatches))
             let player = playerColor
             return await Task.detached(priority: .userInitiated) {
                 MoveDetector.detect(from: start, observation: observation, playerColor: player)
             }.value
+        }
+    }
+
+    /// Squares that look wrong in two checks in a row are reported (spoken once); a single odd
+    /// check is ignored as noise (a hand, a reflection).
+    private func reportMismatches(_ current: Set<Int>) {
+        let persistent = current.intersection(previousMismatches)
+        previousMismatches = current
+        let squares = persistent.sorted().map { Square(index: $0) }
+        guard squares != mismatchedSquares else { return }
+        mismatchedSquares = squares
+        if !squares.isEmpty {
+            warn("The board doesn't match the game. Check your phone.")
         }
     }
 
@@ -413,6 +436,8 @@ final class GameViewModel {
     private func positionChanged(announcement: String?, speak: Bool) {
         engineTask?.cancel()
         suggestion = nil
+        previousMismatches = []
+        mismatchedSquares = []
 
         if position.legalMoves().isEmpty {
             let result = position.board.isInCheck(position.sideToMove) ? "Checkmate." : "Stalemate."

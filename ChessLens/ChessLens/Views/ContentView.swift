@@ -210,6 +210,12 @@ struct ContentView: View {
         if let event = game.lastEvent {
             Text(event).font(.caption).foregroundStyle(.secondary)
         }
+        if game.mode == .glasses, !game.mismatchedSquares.isEmpty {
+            Text("The camera sees something different on \(game.mismatchedSquares.map(\.algebraic).joined(separator: ", ")) (red on the board). If a move was missed, tap it on the board; long-press a square to fix a piece.")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+        }
     }
 
     private var isProblem: Bool {
@@ -273,6 +279,7 @@ struct ContentView: View {
                 bottomColor: playerColor,
                 highlight: game.suggestion.flatMap { UCIMove($0.bestMove) },
                 selected: game.selectedSquare,
+                flagged: game.mode == .glasses ? game.mismatchedSquares : [],
                 onTap: { game.tap($0) },
                 onLongPress: { editingSquare = $0 }
             )

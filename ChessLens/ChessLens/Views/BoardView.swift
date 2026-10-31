@@ -7,6 +7,8 @@ struct BoardView: View {
     let bottomColor: PieceColor
     var highlight: UCIMove?
     var selected: Square?
+    /// Squares the camera says don't match the game, outlined in red.
+    var flagged: [Square] = []
     var onTap: ((Square) -> Void)?
     var onLongPress: ((Square) -> Void)?
 
@@ -44,6 +46,9 @@ struct BoardView: View {
             Rectangle().fill(isLight ? light : dark)
             if isHighlighted {
                 Rectangle().fill(accent.opacity(0.55))
+            }
+            if flagged.contains(square) {
+                Rectangle().strokeBorder(Color.red, lineWidth: max(2, size * 0.1))
             }
             if selected == square {
                 Rectangle().strokeBorder(Color.blue, lineWidth: max(2, size * 0.08))

@@ -11,18 +11,15 @@ struct SceneChangeDetector {
     var changeThreshold: Double = 3
     /// How long the view must hold still before it is checked.
     var settleTime: TimeInterval = 1.0
-    /// While the view stays still, re-check this often anyway (checks are cheap and on-device).
-    var recheckInterval: TimeInterval = 4
 
     private var previous: [UInt8]?
     private var stillSince: Date?
     private var lastAnalyzed: [UInt8]?
-    private var lastAnalyzedAt: Date?
     private var movedSinceAnalysis = true
 
     /// Feeds one frame; returns true once the view has been still for `settleTime` after any
-    /// movement (a hand making a move, the wearer's head turning), after a visible change, or
-    /// every `recheckInterval` while nothing seems to happen.
+    /// movement (a hand making a move, the wearer's head turning) or after a visible change.
+    /// (Periodic checks are scheduled by the caller.)
     mutating func shouldAnalyze(_ image: UIImage, now: Date = Date()) -> Bool {
         guard let thumb = Self.thumbnail(image) else { return false }
         defer { previous = thumb }
@@ -38,14 +35,12 @@ struct SceneChangeDetector {
 
         if movedSinceAnalysis || lastAnalyzed == nil { return true }
         if let lastAnalyzed, Self.difference(lastAnalyzed, thumb) >= changeThreshold { return true }
-        if let lastAnalyzedAt, now.timeIntervalSince(lastAnalyzedAt) >= recheckInterval { return true }
         return false
     }
 
     /// Records the frame that was just checked.
     mutating func markAnalyzed(_ image: UIImage, now: Date = Date()) {
         lastAnalyzed = Self.thumbnail(image)
-        lastAnalyzedAt = now
         movedSinceAnalysis = false
     }
 
@@ -53,7 +48,6 @@ struct SceneChangeDetector {
         previous = nil
         stillSince = nil
         lastAnalyzed = nil
-        lastAnalyzedAt = nil
         movedSinceAnalysis = true
     }
 

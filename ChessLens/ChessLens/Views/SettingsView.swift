@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage(SettingsKey.announceOpponent) private var announceOpponent = true
     @AppStorage(SettingsKey.speakEvaluation) private var speakEvaluation = false
     @AppStorage(SettingsKey.thinkTimeMilliseconds) private var thinkTime = 1500
+    @AppStorage(SettingsKey.checkIntervalSeconds) private var checkInterval = 5.0
 
     var body: some View {
         NavigationStack {
@@ -29,12 +30,15 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Hands-free tracking", isOn: $handsFree)
+                    Stepper(value: $checkInterval, in: 2...15, step: 1) {
+                        LabeledContent("Check the board every", value: "\(Int(checkInterval)) s")
+                    }
                     Toggle("Say the opponent's move", isOn: $announceOpponent)
                     Toggle("Say the evaluation", isOn: $speakEvaluation)
                 } header: {
                     Text("Glasses")
                 } footer: {
-                    Text("Hands-free: whenever the view holds still, the app compares the board with the last confirmed view. When it sees your opponent's move, it says it and then your best reply through the glasses.")
+                    Text("Hands-free: the app checks the board whenever the view holds still, and at least every few seconds. Each check looks for a move and verifies every square against the game. When it sees your opponent's move, it says it and then your best reply through the glasses.")
                 }
 
                 Section {

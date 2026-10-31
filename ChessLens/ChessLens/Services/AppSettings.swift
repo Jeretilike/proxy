@@ -8,6 +8,7 @@ enum SettingsKey {
     static let announceOpponent = "announceOpponent"
     static let speakEvaluation = "speakEvaluation"
     static let thinkTimeMilliseconds = "thinkTimeMilliseconds"
+    static let checkIntervalSeconds = "checkIntervalSeconds"
 }
 
 /// Where the game is played: on a physical board seen through the glasses, or on the screen.
@@ -30,6 +31,7 @@ enum AppSettings {
             SettingsKey.announceOpponent: true,
             SettingsKey.speakEvaluation: false,
             SettingsKey.thinkTimeMilliseconds: 1500,
+            SettingsKey.checkIntervalSeconds: 5,
         ])
     }
 
@@ -43,5 +45,7 @@ enum AppSettings {
     static var handsFree: Bool { defaults.bool(forKey: SettingsKey.handsFree) }
     static var announceOpponent: Bool { defaults.bool(forKey: SettingsKey.announceOpponent) }
     static var speakEvaluation: Bool { defaults.bool(forKey: SettingsKey.speakEvaluation) }
+    /// How often the glasses check the board even if the view never holds still.
+    static var checkIntervalSeconds: Double { max(2, defaults.double(forKey: SettingsKey.checkIntervalSeconds)) }
     static var thinkTimeMilliseconds: Int { max(200, defaults.integer(forKey: SettingsKey.thinkTimeMilliseconds)) }
 }
