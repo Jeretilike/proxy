@@ -79,6 +79,32 @@ enum MoveDetector {
         return .moves(top.moves, top.position)
     }
 
+    /// Finds the move (or move and reply) after which `mismatches(board)` is zero, when exactly one
+    /// resulting board fits. Used when comparison with the last confirmed view missed a move but
+    /// the current view clearly disagrees with the game.
+    static func recover(from position: ChessPosition, playerColor: PieceColor,
+                        mismatches: (ChessBoard) -> Int) -> ([UCIMove], ChessPosition)? {
+        guard mismatches(position.board) > 0 else { return nil }
+        var fits: [String: ([UCIMove], ChessPosition)] = [:]
+        let firstMoves = position.legalMoves().filter { $0.promotion == nil || $0.promotion == .queen }
+        for move in firstMoves {
+            let result = position.applying(move)
+            if mismatches(result.board) == 0 { fits[result.board.placementFEN] = ([move], result) }
+        }
+        if fits.isEmpty {
+            for first in firstMoves {
+                let middle = position.applying(first)
+                for second in middle.legalMoves() where second.promotion == nil || second.promotion == .queen {
+                    let result = middle.applying(second)
+                    if mismatches(result.board) == 0, fits[result.board.placementFEN] == nil {
+                        fits[result.board.placementFEN] = ([first, second], result)
+                    }
+                }
+            }
+        }
+        return fits.count == 1 ? fits.values.first : nil
+    }
+
     private struct Score {
         var total: Float
         var evidence: Float

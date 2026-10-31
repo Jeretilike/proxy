@@ -340,25 +340,53 @@ final class GameViewModel {
 
         let startPosition = position
         guard let first = await observe(image, from: startPosition) else { return }
-        guard case .moves(let moves, let result) = first else {
-            handle(first)
+
+        // A move seen by comparing with the last confirmed view, or, if that missed it but squares
+        // disagree with the game, the move(s) that make every square agree again.
+        var found: ([UCIMove], ChessPosition)?
+        if case .moves(let moves, let result) = first.detection {
+            found = (moves, result)
+        } else if !first.mismatches.isEmpty {
+            found = await recoverMove(from: startPosition, features: first.features)
+        }
+        guard let found else {
+            reportMismatches(first.mismatches)
+            handle(first.detection, mismatches: first.mismatches)
             return
         }
+        let (moves, result) = found
 
         // Confirm with a second frame before trusting a move, so one bad frame can't corrupt the game.
         try? await Task.sleep(nanoseconds: 600_000_000)
         guard let secondFrame = glasses.latestFrame?.uprightCGImage(),
               let second = await observe(secondFrame, from: startPosition),
-              case .moves(_, let confirmed) = second, confirmed.board == result.board,
               position == startPosition
         else { return }
+        let player = playerColor
+        let confirmed: Bool
+        if case .moves(_, let again) = second.detection, again.board == result.board {
+            confirmed = true
+        } else {
+            confirmed = BoardTracker.mismatchedSquares(second.features, board: result.board, playerColor: player).isEmpty
+        }
+        guard confirmed else {
+            reportMismatches(second.mismatches)
+            return
+        }
 
         await tracker.commitPending(board: result.board)
         record(moves, announceOpponent: true, speak: true)
     }
 
+    private struct CheckResult {
+        var detection: MoveDetection
+        /// Squares that disagree with the game in this view.
+        var mismatches: Set<Int>
+        var features: [SIMD4<Float>]
+    }
+
     /// Aligns the frame and runs move detection off the main thread. Nil when the board wasn't found.
-    private func observe(_ image: CGImage, from start: ChessPosition) async -> MoveDetection? {
+    private func observe(_ image: CGImage, from start: ChessPosition) async -> CheckResult? {
         switch await tracker.observe(image, playerColor: playerColor) {
         case .notCalibrated:
             return nil
@@ -367,16 +395,27 @@ final class GameViewModel {
             state = .lost
             if lostCount == 4 { warn("I lost the board. Look at the whole board.") }
             return nil
-        case .observed(let observation, let newCorners, let mismatches):
+        case .observed(let observation, let newCorners, let mismatches, let features):
             lostCount = 0
             corners = newCorners
             if state == .lost { state = idleState }
-            reportMismatches(Set(mismatches))
             let player = playerColor
-            return await Task.detached(priority: .userInitiated) {
+            let detection = await Task.detached(priority: .userInitiated) {
                 MoveDetector.detect(from: start, observation: observation, playerColor: player)
             }.value
+            return CheckResult(detection: detection, mismatches: Set(mismatches), features: features)
         }
+    }
+
+    /// The legal move, or move and reply, after which every square in this view agrees with the
+    /// game, if exactly one result does.
+    private func recoverMove(from start: ChessPosition, features: [SIMD4<Float>]) async -> ([UCIMove], ChessPosition)? {
+        let player = playerColor
+        return await Task.detached(priority: .userInitiated) {
+            MoveDetector.recover(from: start, playerColor: player) { board in
+                BoardTracker.mismatchedSquares(features, board: board, playerColor: player).count
+            }
+        }.value
     }
 
     /// Squares that look wrong in two checks in a row are reported (spoken once); a single odd
@@ -392,12 +431,15 @@ final class GameViewModel {
         }
     }
 
-    private func handle(_ detection: MoveDetection) {
+    private func handle(_ detection: MoveDetection, mismatches: Set<Int>) {
         switch detection {
         case .noChange:
-            // Keep the reference fresh as lighting and viewing angle drift.
-            Task { [position] in await tracker.commitPending(board: position.board) }
-            if case .unsure = state { state = idleState }
+            // Keep the reference fresh as lighting and viewing angle drift, but never while squares
+            // disagree with the game: that would bake a missed move into the reference.
+            if mismatches.isEmpty {
+                Task { [position] in await tracker.commitPending(board: position.board) }
+                if case .unsure = state { state = idleState }
+            }
         case .unclear:
             state = .unsure("Something changed but it doesn't match a move. If a move was played, tap it on the board.")
         case .ambiguous:

@@ -97,7 +97,7 @@ enum TrackerResult {
     case notCalibrated
     case lost
     /// `mismatches`: squares (indices) that clearly don't look like what the game says is on them.
-    case observed(SquareObservation, BoardCorners, mismatches: [Int])
+    case observed(SquareObservation, BoardCorners, mismatches: [Int], features: [SIMD4<Float>])
 }
 
 /// Keeps a reference view of the board and compares new frames with it square by square.
@@ -162,7 +162,7 @@ actor BoardTracker {
         let contents = (0..<64).map { reference.model.probabilities(features[$0], light: Square(index: $0).isLight) }
         let mismatches = Self.mismatchedSquares(features, board: reference.board, playerColor: playerColor)
         return .observed(SquareObservation(differences: differences, contents: contents), view.corners,
-                         mismatches: mismatches)
+                         mismatches: mismatches, features: features)
     }
 
     /// Squares that clearly disagree with `board`, judged within this one view: an "empty" square
