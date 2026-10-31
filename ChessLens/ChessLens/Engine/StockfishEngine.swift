@@ -23,7 +23,7 @@ enum EngineError: LocalizedError {
         switch self {
         case .missingNetworks:
             return "Stockfish's neural network files are missing from the app bundle. Rebuild with the GitHub workflow, which downloads them."
-        case .startTimeout: return "Stockfish did not start."
+        case .startTimeout: return "Stockfish didn't start in time. It will try again on the next move; if this keeps happening, close and reopen the app."
         case .busy: return "Stockfish is already analysing a position."
         case .noLegalMoves: return "No legal moves: the game is over (checkmate or stalemate)."
         case .searchTimeout: return "Stockfish did not answer in time."
@@ -44,35 +44,70 @@ actor StockfishEngine {
 
     private var engine: Engine?
     private var listenTask: Task<Void, Never>?
+    private var startTask: Task<Void, Error>?
+    private var isReady = false
+    private var receivedReadyOK = false
     private var pending: CheckedContinuation<EngineAnalysis, Error>?
     private var latestInfo: EngineResponse.Info?
 
+    /// Starts Stockfish once. Concurrent callers share the same start-up: ChessKitEngine wires
+    /// Stockfish to process-wide stdin/stdout, so a second `Engine` would tear down the first.
     func start() async throws {
-        if let engine, await engine.isRunning { return }
+        if isReady { return }
+        if let startTask { return try await startTask.value }
+        let task = Task { try await self.launch() }
+        startTask = task
+        do {
+            try await task.value
+            isReady = true
+        } catch {
+            startTask = nil // a later call retries, reusing the same engine
+            throw error
+        }
+    }
+
+    private func launch() async throws {
         guard Self.networksAvailable else { throw EngineError.missingNetworks }
 
-        let engine = Engine(type: .stockfish)
-        self.engine = engine
-        await engine.start(coreCount: ProcessInfo.processInfo.activeProcessorCount)
-
-        if let stream = await engine.responseStream {
-            listenTask?.cancel()
-            listenTask = Task { [weak self] in
-                for await response in stream {
-                    await self?.handle(response)
+        let engine: Engine
+        if let existing = self.engine {
+            // An earlier attempt timed out: restart the UCI handshake on the same engine.
+            engine = existing
+            await engine.send(command: .uci)
+        } else {
+            engine = Engine(type: .stockfish)
+            self.engine = engine
+            await engine.start(coreCount: ProcessInfo.processInfo.activeProcessorCount)
+            if let stream = await engine.responseStream {
+                listenTask = Task { [weak self] in
+                    for await response in stream {
+                        await self?.handle(response)
+                    }
                 }
             }
         }
 
-        // ChessKitEngine flips `isRunning` once the UCI handshake and option setup finish.
-        for _ in 0..<200 {
-            if await engine.isRunning {
-                await engine.send(command: .setoption(id: "Hash", value: "64"))
-                return
-            }
+        // ChessKitEngine flips `isRunning` after the uci → uciok → isready → readyok handshake.
+        var waited = 0
+        while await !engine.isRunning {
+            guard waited < 600 else { throw EngineError.startTimeout } // 30 s
             try await Task.sleep(nanoseconds: 50_000_000)
+            waited += 1
         }
-        throw EngineError.startTimeout
+
+        // ChessKitEngine then sends its setup options, including the neural network files. Give
+        // those a moment to be written, then wait until Stockfish has processed everything:
+        // a search started before the networks load makes Stockfish exit.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        await engine.send(command: .setoption(id: "Hash", value: "64"))
+        receivedReadyOK = false
+        await engine.send(command: .isready)
+        waited = 0
+        while !receivedReadyOK {
+            guard waited < 1500 else { throw EngineError.startTimeout } // 30 s
+            try await Task.sleep(nanoseconds: 20_000_000)
+            waited += 1
+        }
     }
 
     func analyze(fen: String, movetimeMilliseconds: Int) async throws -> EngineAnalysis {
@@ -114,6 +149,8 @@ actor StockfishEngine {
 
     private func handle(_ response: EngineResponse) {
         switch response {
+        case .readyok:
+            receivedReadyOK = true
         case let .info(info):
             // Keep the main line's latest report; other info lines (currmove, hashfull…) lack a pv.
             if let pv = info.pv, !pv.isEmpty, (info.multipv ?? 1) == 1 {
