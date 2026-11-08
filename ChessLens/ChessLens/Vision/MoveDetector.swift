@@ -26,7 +26,8 @@ enum MoveDetector {
     /// Square changes smaller than this many robust standard deviations are treated as noise.
     static let changeThreshold: Float = 4
     /// Floor for the noise scale (0–255 units) so a perfectly still view can't inflate tiny changes.
-    static let noiseFloor: Float = 4
+    /// Square comparisons tolerate small shifts, so 3 is enough.
+    static let noiseFloor: Float = 3
 
     static func detect(from position: ChessPosition, observation: SquareObservation,
                        playerColor: PieceColor) -> MoveDetection {
@@ -87,11 +88,16 @@ enum MoveDetector {
         guard mismatches(position.board) > 0 else { return nil }
         var fits: [String: ([UCIMove], ChessPosition)] = [:]
         let firstMoves = position.legalMoves().filter { $0.promotion == nil || $0.promotion == .queen }
+        var bestSingle = Int.max
         for move in firstMoves {
             let result = position.applying(move)
-            if mismatches(result.board) == 0 { fits[result.board.placementFEN] = ([move], result) }
+            let count = mismatches(result.board)
+            bestSingle = min(bestSingle, count)
+            if count == 0 { fits[result.board.placementFEN] = ([move], result) }
         }
-        if fits.isEmpty {
+        // Only consider a move and a reply when no single move comes close to explaining the
+        // board; otherwise a near-miss single move plus an arbitrary reply could "fit".
+        if fits.isEmpty && bestSingle >= 2 {
             for first in firstMoves {
                 let middle = position.applying(first)
                 for second in middle.legalMoves() where second.promotion == nil || second.promotion == .queen {

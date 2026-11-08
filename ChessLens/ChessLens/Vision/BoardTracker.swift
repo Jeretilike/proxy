@@ -107,7 +107,7 @@ actor BoardTracker {
     private static let side = 256
     private static let cell = 32
     private static let inset = 6
-    /// Median per-square difference above which the board is considered lost (0–255 scale).
+    /// Typical per-square difference above which the board is considered lost (0–255 scale).
     private static let lostThreshold: Float = 30
 
     private struct View {
@@ -179,6 +179,11 @@ actor BoardTracker {
             }
         }
 
+        // A White piece on a light square can look almost like an empty square, so it is never
+        // flagged as "looks empty" and doesn't count towards what occupied squares look like.
+        func lowContrast(_ index: Int) -> Bool {
+            board.squares[index]?.color == .white && Square(index: index).isLight
+        }
         let luminance = features.map { 0.299 * $0.x + 0.587 * $0.y + 0.114 * $0.z }
         var emptyTexture: [Float] = [], occupiedTexture: [Float] = []
         var emptyLight: [Float] = [], emptyDark: [Float] = []
@@ -186,7 +191,7 @@ actor BoardTracker {
             if board.squares[index] == nil {
                 if !shadowed.contains(index) { emptyTexture.append(features[index].w) }
                 if Square(index: index).isLight { emptyLight.append(luminance[index]) } else { emptyDark.append(luminance[index]) }
-            } else {
+            } else if !lowContrast(index) {
                 occupiedTexture.append(features[index].w)
             }
         }
@@ -200,7 +205,7 @@ actor BoardTracker {
                 let texture = features[index].w
                 if board.squares[index] == nil {
                     if !shadowed.contains(index), texture > busy - 0.15 * textureGap { flagged.append(index) }
-                } else if texture < plain + 0.15 * textureGap {
+                } else if !lowContrast(index), texture < plain + 0.15 * textureGap {
                     flagged.append(index)
                 }
             }
@@ -256,7 +261,9 @@ actor BoardTracker {
         var best: (view: View, error: Float)?
         func evaluate(_ corners: BoardCorners) {
             guard corners.isPlausible, let pixels = warp(frame, corners) else { return }
-            let error = Self.differences(reference.pixels, pixels).median
+            // Average of all but the 8 most changed squares: sensitive to misalignment anywhere on
+            // the board, yet unaffected by the few squares a move changes.
+            let error = Self.differences(reference.pixels, pixels).sorted().prefix(56).reduce(0, +) / 56
             if best == nil || error < best!.error {
                 best = (View(frame: frame, corners: corners, pixels: pixels), error)
             }
@@ -521,18 +528,29 @@ actor BoardTracker {
     /// Mean absolute colour difference per square after evening out overall brightness.
     static func differences(_ a: [UInt8], _ b: [UInt8]) -> [Float] {
         let gain = min(max(meanLuminance(a) / max(meanLuminance(b), 1), 0.6), 1.6)
+        // Each square is compared at the best of small shifts (up to `slack` pixels), so a pixel or
+        // two of misalignment on high-contrast edges doesn't look like a change, while a piece
+        // arriving or leaving does.
+        let slack = 2
         return (0..<64).map { index in
             let r = region(index)
-            var total: Float = 0
-            for y in r.y..<(r.y + r.size) {
-                for x in r.x..<(r.x + r.size) {
-                    let o = (y * side + x) * 4
-                    total += abs(Float(a[o]) - gain * Float(b[o]))
-                        + abs(Float(a[o + 1]) - gain * Float(b[o + 1]))
-                        + abs(Float(a[o + 2]) - gain * Float(b[o + 2]))
+            var best = Float.greatestFiniteMagnitude
+            for dy in -slack...slack {
+                for dx in -slack...slack {
+                    var total: Float = 0
+                    for y in r.y..<(r.y + r.size) {
+                        for x in r.x..<(r.x + r.size) {
+                            let o = (y * side + x) * 4
+                            let q = ((y + dy) * side + x + dx) * 4
+                            total += abs(Float(a[o]) - gain * Float(b[q]))
+                                + abs(Float(a[o + 1]) - gain * Float(b[q + 1]))
+                                + abs(Float(a[o + 2]) - gain * Float(b[q + 2]))
+                        }
+                    }
+                    best = min(best, total)
                 }
             }
-            return total / Float(r.size * r.size * 3)
+            return best / Float(r.size * r.size * 3)
         }
     }
 
