@@ -220,6 +220,32 @@ kbd { font-size: 11px; opacity: 0.7; border: 1px solid currentColor; border-radi
 .screen-status { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
 button.small { padding: 4px 9px; font-size: 13px; }
 
+/* Mini mode ----------------------------------------------------------------------------------- */
+
+.brand #miniToggle { margin-left: 8px; }
+.mini-bar { display: none; }
+body.mini { overflow: hidden; }
+body.mini .layout { grid-template-columns: 1fr; padding: 6px; gap: 0; height: 100vh; }
+body.mini .board-area,
+body.mini .brand,
+body.mini .segmented,
+body.mini .mode-help,
+body.mini .row.player,
+body.mini .status,
+body.mini .moves,
+body.mini .row.wrap,
+body.mini .screen-card,
+body.mini .suggestion .row:not(.mini-bar) { display: none; }
+body.mini .panel { padding: 0; background: transparent; gap: 0; }
+body.mini .suggestion { padding: 8px 10px; height: calc(100vh - 12px); display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+body.mini .suggestion-move { font-size: clamp(20px, 13vw, 40px); }
+body.mini .suggestion-note { margin: 0; font-size: 12px; min-height: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.mini .mini-bar { display: flex; gap: 4px; }
+body.mini .mini-bar button { flex: 1; padding: 3px 4px; font-size: 12px; }
+body.mini #miniRead.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+body.mini #miniMode.brilliant { color: var(--brilliant); border-color: var(--brilliant); }
+@media (max-height: 120px) { body.mini .suggestion-note { display: none; } }
+
 /* Edit mode ------------------------------------------------------------------------------------ */
 
 .edit-bar {

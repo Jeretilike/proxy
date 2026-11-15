@@ -24,6 +24,7 @@
       <header class="brand">
         <h1>ChessLens</h1>
         <span class="engine-name" id="engineName">Stockfish</span>
+        <button class="small" id="miniToggle" title="Shrink to a tiny box that stays on top">Mini</button>
       </header>
 
       <div class="segmented" role="radiogroup" aria-label="Mode" id="modeSwitch">
@@ -42,6 +43,11 @@
         <div class="row">
           <button class="primary" id="playIt" disabled>Play it <kbd>Space</kbd></button>
           <button id="sayAgain" disabled>Say it again</button>
+        </div>
+        <div class="row mini-bar">
+          <button class="small" id="miniMode" title="Switch between Best and Brilliant">Best</button>
+          <button class="small" id="miniRead" title="Start or stop reading the screen">Read screen</button>
+          <button class="small" id="miniExpand" title="Back to the full window">Expand</button>
         </div>
       </div>
 

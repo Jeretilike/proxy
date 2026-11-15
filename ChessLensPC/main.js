@@ -34,7 +34,8 @@ function createWindow() {
     title: 'ChessLens',
     icon: join(here, 'build', 'icon.png'),
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, sandbox: true, preload: join(here, 'preload.cjs') },
+    // Keep reading the screen at full speed while minimised or in the background.
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false, preload: join(here, 'preload.cjs') },
   });
   Menu.setApplicationMenu(null);
   // Links (none today) open in the normal browser, never inside the app.
@@ -122,6 +123,24 @@ ipcMain.handle('overlay', async (_event, payload) => {
   if (o.webContents.isLoading()) await new Promise((resolve) => o.webContents.once('did-finish-load', resolve));
   o.webContents.send('overlay-draw', payload);
   o.showInactive();
+});
+
+// Mini mode: a tiny always-on-top box that shows just the move.
+let normalBounds = null;
+
+ipcMain.handle('mini', (_event, on) => {
+  if (!window) return;
+  if (on) {
+    normalBounds = window.getBounds();
+    window.setMinimumSize(200, 96);
+    const area = screen.getDisplayMatching(normalBounds).workArea;
+    window.setBounds({ x: area.x + area.width - 300, y: area.y + 20, width: 280, height: 150 });
+    window.setAlwaysOnTop(true, 'floating');
+  } else {
+    window.setAlwaysOnTop(false);
+    window.setMinimumSize(960, 640);
+    if (normalBounds) window.setBounds(normalBounds);
+  }
 });
 
 app.whenReady().then(() => {

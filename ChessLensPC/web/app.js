@@ -857,6 +857,7 @@ async function startReading() {
     await reader.start($('screenSource').value || null);
     $('screenToggle').textContent = 'Stop';
     $('screenCard').classList.add('on');
+    renderMiniBar();
   } catch (error) {
     $('screenStatus').textContent = error.name === 'NotAllowedError'
       ? 'Screen reading was not allowed.'
@@ -869,9 +870,40 @@ $('screenToggle').addEventListener('click', () => {
     reader.stop('Stopped.');
     $('screenToggle').textContent = 'Start';
     $('screenCard').classList.remove('on');
+    renderMiniBar();
   } else {
     startReading();
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Mini mode
+
+function setMini(on) {
+  document.body.classList.toggle('mini', on);
+  window.chesslensDesktop?.mini(on);
+  save('mini', on);
+  renderMiniBar();
+}
+
+function renderMiniBar() {
+  const brilliant = settings.mode === 'brilliant';
+  $('miniMode').textContent = brilliant ? 'Brilliant !!' : 'Best';
+  $('miniMode').classList.toggle('brilliant', brilliant);
+  $('miniRead').textContent = reader.running ? 'Reading' : 'Read screen';
+  $('miniRead').classList.toggle('on', reader.running);
+}
+
+$('miniToggle').addEventListener('click', () => setMini(true));
+$('miniExpand').addEventListener('click', () => setMini(false));
+$('miniMode').addEventListener('click', () => {
+  const next = settings.mode === 'brilliant' ? 'best' : 'brilliant';
+  $('modeSwitch').querySelector(`[data-mode="${next}"]`).click();
+  renderMiniBar();
+});
+$('miniRead').addEventListener('click', async () => {
+  $('screenToggle').click();
+  setTimeout(renderMiniBar, 400);
 });
 
 $('learnPieces').addEventListener('click', () => {
@@ -893,6 +925,7 @@ $('forgetPieces').addEventListener('click', () => {
 });
 
 fillScreenSources();
+renderMiniBar();
 
 // ---------------------------------------------------------------------------------------------
 // Start

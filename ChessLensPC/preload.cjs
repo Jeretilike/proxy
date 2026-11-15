@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('chesslensDesktop', {
   chooseSource: (id) => ipcRenderer.invoke('choose-screen-source', id),
   geometry: () => ipcRenderer.invoke('screen-geometry'),
   highlight: (payload) => ipcRenderer.invoke('overlay', payload),
+  mini: (on) => ipcRenderer.invoke('mini', on),
 });
