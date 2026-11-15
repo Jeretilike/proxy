@@ -4,6 +4,7 @@
 import { Chess } from './vendor/chess.js';
 import { Engine } from './engine.js';
 import { chooseMove, spokenSan, sanFor, evaluationText, winChance } from './brilliant.js';
+import { ScreenReader } from './screen.js';
 
 const GLYPH = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
 const FILES = 'abcdefgh';
@@ -726,6 +727,148 @@ $('settingsDialog').addEventListener('close', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// Reading the board from the screen
+
+const reader = new ScreenReader({
+  preview: $('screenPreview'),
+  onStatus: (text) => { $('screenStatus').textContent = text; },
+  onPosition: followScreen,
+});
+
+/** Brings this board in line with the board read from the screen. */
+function followScreen({ placement, placementFen: seen, whiteAtBottom, lastMover }) {
+  if (editing) return;
+  // On chess sites your own pieces are at the bottom.
+  const bottom = whiteAtBottom ? 'w' : 'b';
+  if (settings.color !== bottom) {
+    settings.color = bottom;
+    save('settings', settings);
+    setSegmented('colorSwitch', 'color', bottom);
+  }
+  flipped = !whiteAtBottom;
+
+  const current = game.fen().split(' ')[0];
+  if (seen === current) {
+    // Same pieces; fix the side to move if the highlight says otherwise.
+    if (lastMover && game.turn() === lastMover) loadScreenPosition(seen, lastMover === 'w' ? 'b' : 'w', placement);
+    else renderBoard();
+    return;
+  }
+  const path = movesBetween(game.fen(), seen);
+  if (path) {
+    for (const move of path) game.move(move);
+    selected = null;
+    positionChanged();
+    return;
+  }
+  const turn = lastMover ? (lastMover === 'w' ? 'b' : 'w') : game.turn();
+  loadScreenPosition(seen, turn, placement);
+}
+
+/** One or two legal moves that lead from `fen` to the placement seen on screen, if any. */
+function movesBetween(fen, seen) {
+  const chess = new Chess(fen);
+  for (const first of chess.moves({ verbose: true })) {
+    chess.move(first);
+    if (chess.fen().split(' ')[0] === seen) return [first.lan];
+    for (const second of chess.moves({ verbose: true })) {
+      chess.move(second);
+      const match = chess.fen().split(' ')[0] === seen;
+      chess.undo();
+      if (match) { chess.undo(); return [first.lan, second.lan]; }
+    }
+    chess.undo();
+  }
+  return null;
+}
+
+function loadScreenPosition(seen, turn, placement) {
+  const at = (sq, color, type) => {
+    const p = placement[(Number(sq[1]) - 1) * 8 + FILES.indexOf(sq[0])];
+    return p && p.color === color && p.type === type;
+  };
+  let castling = '';
+  if (at('e1', 'w', 'k')) { if (at('h1', 'w', 'r')) castling += 'K'; if (at('a1', 'w', 'r')) castling += 'Q'; }
+  if (at('e8', 'b', 'k')) { if (at('h8', 'b', 'r')) castling += 'k'; if (at('a8', 'b', 'r')) castling += 'q'; }
+  for (const side of [turn, turn === 'w' ? 'b' : 'w']) {
+    try {
+      game.load(`${seen} ${side} ${castling || '-'} - 0 1`);
+      brilliantPlies = new Set();
+      selected = null;
+      positionChanged();
+      return;
+    } catch {
+      // Try the other side to move (e.g. the side not to move can't be in check).
+    }
+  }
+  $('screenStatus').textContent = 'The position on screen isn’t a legal chess position. Is the whole board visible?';
+}
+
+async function fillScreenSources() {
+  const select = $('screenSource');
+  const sources = await reader.sources().catch(() => null);
+  if (!sources) {
+    select.classList.add('hidden');
+    return;
+  }
+  const previous = select.value || load('screenSource', '');
+  select.textContent = '';
+  // Browser windows showing a chess site first, then the other windows, then whole screens.
+  const rank = (s) => (/chess|lichess/i.test(s.name) ? 0 : s.screen ? 2 : 1);
+  sources.sort((a, b) => rank(a) - rank(b));
+  for (const s of sources) select.append(new Option(s.screen ? `Screen: ${s.name}` : s.name, s.id));
+  if ([...select.options].some((o) => o.value === previous)) select.value = previous;
+}
+
+$('screenSource').addEventListener('pointerenter', fillScreenSources);
+$('screenSource').addEventListener('change', () => {
+  save('screenSource', $('screenSource').value);
+  if (reader.running) startReading();
+});
+
+async function startReading() {
+  try {
+    await reader.start($('screenSource').value || null);
+    $('screenToggle').textContent = 'Stop';
+    $('screenCard').classList.add('on');
+  } catch (error) {
+    $('screenStatus').textContent = error.name === 'NotAllowedError'
+      ? 'Screen reading was not allowed.'
+      : `Couldn’t read the screen: ${error.message}`;
+  }
+}
+
+$('screenToggle').addEventListener('click', () => {
+  if (reader.running) {
+    reader.stop('Stopped.');
+    $('screenToggle').textContent = 'Start';
+    $('screenCard').classList.remove('on');
+  } else {
+    startReading();
+  }
+});
+
+$('learnPieces').addEventListener('click', () => {
+  if (!reader.running || !reader.squares) {
+    $('screenStatus').textContent = 'Start reading the screen first, with the board visible.';
+    return;
+  }
+  const placement = new Array(64).fill(null);
+  for (const row of game.board()) for (const cell of row) {
+    if (cell) placement[(Number(cell.square[1]) - 1) * 8 + FILES.indexOf(cell.square[0])] = { color: cell.color, type: cell.type };
+  }
+  reader.learnPosition(placement, settings.color === 'w');
+  $('screenStatus').textContent = 'Learned the pieces from the board as set up here. Make sure every piece type is on the board.';
+});
+
+$('forgetPieces').addEventListener('click', () => {
+  reader.forgetPieces();
+  $('screenStatus').textContent = 'Forgot the pieces. Show a starting position to learn them again.';
+});
+
+fillScreenSources();
+
+// ---------------------------------------------------------------------------------------------
 // Start
 
 setSegmented('modeSwitch', 'mode', settings.mode);
@@ -745,4 +888,4 @@ engine.start()
   .catch((error) => setStatus(error.message, true));
 
 // For the automated tests.
-window.chesslens = { game, engine, settings, get suggestion() { return suggestion; }, makeMove, analyze, positionChanged };
+window.chesslens = { game, engine, settings, reader, followScreen, get suggestion() { return suggestion; }, makeMove, analyze, positionChanged };

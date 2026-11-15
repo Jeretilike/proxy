@@ -45,6 +45,24 @@
         </div>
       </div>
 
+      <div class="card screen-card" id="screenCard">
+        <div class="row">
+          <strong>Read my screen</strong>
+          <select id="screenSource" title="Screen or window to read"></select>
+          <button class="primary" id="screenToggle">Start</button>
+        </div>
+        <div class="row screen-row">
+          <canvas id="screenPreview" width="96" height="96"></canvas>
+          <div>
+            <p class="screen-status" id="screenStatus">Reads the board from a chess site on your screen and keeps this board in sync.</p>
+            <div class="row wrap">
+              <button class="small" id="learnPieces" title="Teach the pieces now on screen, using the position on this app's board">Learn pieces</button>
+              <button class="small" id="forgetPieces">Forget pieces</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="row player">
         <span>You play</span>
         <div class="segmented small" role="radiogroup" aria-label="Your color" id="colorSwitch">

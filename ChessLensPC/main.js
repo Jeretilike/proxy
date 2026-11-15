@@ -2,7 +2,7 @@
 //
 // Pages are served from a private app:// address with cross-origin isolation headers, which lets
 // the full-strength multi-threaded Stockfish (WebAssembly with shared memory) run.
-import { app, BrowserWindow, Menu, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, desktopCapturer, ipcMain, Menu, net, protocol, screen, session, shell } from 'electron';
 import { extname, join, normalize, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -34,7 +34,7 @@ function createWindow() {
     title: 'ChessLens',
     icon: join(here, 'build', 'icon.png'),
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, sandbox: true },
+    webPreferences: { contextIsolation: true, sandbox: true, preload: join(here, 'preload.cjs') },
   });
   Menu.setApplicationMenu(null);
   // Links (none today) open in the normal browser, never inside the app.
@@ -57,7 +57,38 @@ app.on('second-instance', () => {
   }
 });
 
+// Screen reading: the page picks a screen or window; capture requests then get that source with
+// no system picker. Frames are only processed inside the app.
+let chosenSource = null;
+
+async function captureSources() {
+  const sources = await desktopCapturer.getSources({ types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 } });
+  return sources.filter((s) => s.name !== 'ChessLens' && !s.name.startsWith('ChessLens '));
+}
+
+ipcMain.handle('screen-sources', async () =>
+  (await captureSources()).map((s) => ({ id: s.id, name: s.name, screen: s.id.startsWith('screen:'), displayId: s.display_id })));
+
+ipcMain.handle('choose-screen-source', (_event, id) => { chosenSource = id; });
+
+// Where the ChessLens window sits on the captured screen, so the app doesn't read its own board.
+ipcMain.handle('screen-geometry', async () => {
+  const sources = await captureSources();
+  const source = sources.find((s) => s.id === chosenSource);
+  if (!source || !source.id.startsWith('screen:') || !window) return null;
+  const displays = screen.getAllDisplays();
+  const display = displays.find((d) => String(d.id) === source.display_id) ?? screen.getPrimaryDisplay();
+  return { display: display.bounds, scaleFactor: display.scaleFactor, window: window.getBounds() };
+});
+
 app.whenReady().then(() => {
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    const sources = await captureSources();
+    const source = sources.find((s) => s.id === chosenSource) ?? sources.find((s) => s.id.startsWith('screen:'));
+    if (source) callback({ video: source });
+    else callback({});
+  });
+
   protocol.handle('app', async (request) => {
     let path = decodeURIComponent(new URL(request.url).pathname);
     if (path === '/' || path === '') path = '/index.html';

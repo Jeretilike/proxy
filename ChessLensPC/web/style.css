@@ -210,6 +210,16 @@ kbd { font-size: 11px; opacity: 0.7; border: 1px solid currentColor; border-radi
 
 .hidden { display: none !important; }
 
+/* Screen reading ------------------------------------------------------------------------------ */
+
+.screen-card { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.screen-card select { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 13px; }
+.screen-card.on { outline: 2px solid var(--accent); }
+.screen-row { align-items: flex-start; }
+.screen-row canvas { width: 96px; height: 96px; border-radius: 6px; background: var(--bg); flex: none; }
+.screen-status { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+button.small { padding: 4px 9px; font-size: 13px; }
+
 /* Edit mode ------------------------------------------------------------------------------------ */
 
 .edit-bar {
