@@ -47,6 +47,7 @@ function createWindow() {
       window.webContents.toggleDevTools();
     }
   });
+  window.on('closed', () => app.quit());
   window.loadURL('app://chesslens/index.html');
 }
 
@@ -81,6 +82,48 @@ ipcMain.handle('screen-geometry', async () => {
   return { display: display.bounds, scaleFactor: display.scaleFactor, window: window.getBounds() };
 });
 
+// On-screen highlights: a transparent, click-through window over the screen being read. It is
+// excluded from screen capture, so the highlights never get read back as part of the board.
+let overlay = null;
+
+function overlayFor(bounds) {
+  if (!overlay || overlay.isDestroyed()) {
+    overlay = new BrowserWindow({
+      ...bounds,
+      transparent: true,
+      frame: false,
+      resizable: false,
+      movable: false,
+      focusable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      show: false,
+      webPreferences: { contextIsolation: true, sandbox: true, preload: join(here, 'overlay-preload.cjs') },
+    });
+    overlay.setIgnoreMouseEvents(true);
+    overlay.setAlwaysOnTop(true, 'screen-saver');
+    overlay.setContentProtection(true);
+    overlay.loadURL('app://chesslens/overlay.html');
+  } else {
+    overlay.setBounds(bounds);
+  }
+  return overlay;
+}
+
+ipcMain.handle('overlay', async (_event, payload) => {
+  if (!payload) {
+    if (overlay && !overlay.isDestroyed()) {
+      overlay.webContents.send('overlay-draw', null);
+      overlay.hide();
+    }
+    return;
+  }
+  const o = overlayFor(payload.display);
+  if (o.webContents.isLoading()) await new Promise((resolve) => o.webContents.once('did-finish-load', resolve));
+  o.webContents.send('overlay-draw', payload);
+  o.showInactive();
+});
+
 app.whenReady().then(() => {
   session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
     const sources = await captureSources();
@@ -106,3 +149,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('before-quit', () => { if (overlay && !overlay.isDestroyed()) overlay.destroy(); });

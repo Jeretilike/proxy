@@ -30,6 +30,7 @@
     "files": [
       "main.js",
       "preload.cjs",
+      "overlay-preload.cjs",
       "package.json",
       "web/**/*",
       "build/icon.png"

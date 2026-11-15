@@ -10,8 +10,9 @@ const INTERVAL = 500;
 const MAX_WIDTH = 2560;
 
 export class ScreenReader {
-  constructor({ onPosition, onStatus, preview }) {
+  constructor({ onPosition, onStatus, onFrame, preview }) {
     this.onPosition = onPosition;
+    this.onFrame = onFrame;
     this.onStatus = onStatus;
     this.preview = preview;
     this.templates = loadTemplates();
@@ -57,7 +58,9 @@ export class ScreenReader {
     this.timer = null;
     if (this.stream) for (const track of this.stream.getTracks()) track.stop();
     this.stream = null;
+    this.grid = null;
     this.video.srcObject = null;
+    window.chesslensDesktop?.highlight(null);
     if (message) this.onStatus(message);
   }
 
@@ -109,7 +112,26 @@ export class ScreenReader {
     }
   }
 
+  /**
+   * Where a board square is on the screen being read, in that screen's coordinates (for the
+   * highlight layer), or null when reading a window instead of a screen.
+   */
+  squareOnScreen(square) {
+    const g = this.geometry, grid = this.grid;
+    if (!g || !grid || !this.canvas.width) return null;
+    const file = square.charCodeAt(0) - 97, rank = Number(square[1]) - 1;
+    const col = this.whiteAtBottom ? file : 7 - file;
+    const row = this.whiteAtBottom ? 7 - rank : rank;
+    const sx = g.display.width / this.canvas.width, sy = g.display.height / this.canvas.height;
+    return { x: (grid.x + col * grid.cw) * sx, y: (grid.y + row * grid.ch) * sy, w: grid.cw * sx, h: grid.ch * sy };
+  }
+
   read() {
+    // The ChessLens window may have moved: refresh where it is every few seconds.
+    this.ticks = (this.ticks ?? 0) + 1;
+    if (window.chesslensDesktop && this.ticks % 6 === 0) {
+      window.chesslensDesktop.geometry().then((g) => { if (this.running) this.geometry = g; });
+    }
     const img = this.frame();
     if (!img) return;
     const grid = findBoard(img, this.grid);
@@ -117,10 +139,12 @@ export class ScreenReader {
       if (this.grid) this.onStatus('Lost the board. Keep the whole board visible.');
       else this.onStatus('Looking for a chess board…');
       this.grid = null;
+      this.onFrame?.();
       this.drawPreview(img, null);
       return;
     }
     this.grid = grid;
+    this.onFrame?.();
     const squares = readSquares(img, grid);
     this.squares = squares;
     this.drawPreview(img, grid);

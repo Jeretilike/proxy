@@ -13,7 +13,7 @@ const START_FEN = new Chess().fen();
 // ---------------------------------------------------------------------------------------------
 // Settings (kept in this computer's browser storage)
 
-const DEFAULTS = { mode: 'best', color: 'w', voice: true, speakEval: false, voiceName: '', thinkTime: 2000, multiPv: 6 };
+const DEFAULTS = { mode: 'best', color: 'w', highlight: true, voice: true, speakEval: false, voiceName: '', thinkTime: 2000, multiPv: 6 };
 const settings = { ...DEFAULTS, ...load('settings', {}) };
 
 function load(key, fallback) {
@@ -49,6 +49,7 @@ let analysisToken = 0;
 let editing = null; // { board: Map(square -> {color,type}), turn, tool }
 
 const engine = new Engine();
+let reader = null; // screen reader, set up below
 const $ = (id) => document.getElementById(id);
 
 // ---------------------------------------------------------------------------------------------
@@ -112,6 +113,7 @@ function renderBoard() {
     }
   }
   renderArrow();
+  updateOverlay();
   renderEvalBar();
 }
 
@@ -697,6 +699,7 @@ function editedFen() {
 
 function openSettings() {
   $('voice').checked = settings.voice;
+  $('highlight').checked = settings.highlight;
   $('speakEval').checked = settings.speakEval;
   $('thinkTime').value = String(settings.thinkTime);
   $('multiPv').value = String(settings.multiPv);
@@ -718,6 +721,8 @@ if ('speechSynthesis' in window) speechSynthesis.addEventListener?.('voiceschang
 $('settingsDialog').addEventListener('close', () => {
   const before = { thinkTime: settings.thinkTime, multiPv: settings.multiPv };
   settings.voice = $('voice').checked;
+  settings.highlight = $('highlight').checked;
+  updateOverlay();
   settings.speakEval = $('speakEval').checked;
   settings.voiceName = $('voiceName').value;
   settings.thinkTime = Number($('thinkTime').value);
@@ -729,10 +734,30 @@ $('settingsDialog').addEventListener('close', () => {
 // ---------------------------------------------------------------------------------------------
 // Reading the board from the screen
 
-const reader = new ScreenReader({
+let overlaySent = 'null';
+
+/** Outlines the suggested move on the chess site itself (when reading a whole screen). */
+function updateOverlay() {
+  if (!reader || !window.chesslensDesktop) return;
+  let payload = null;
+  const current = suggestion && suggestion.fen === game.fen() ? suggestion : null;
+  if (settings.highlight && current && reader.running && !editing) {
+    const move = current.line.move;
+    const from = reader.squareOnScreen(move.slice(0, 2));
+    const to = reader.squareOnScreen(move.slice(2, 4));
+    if (from && to) payload = { display: reader.geometry.display, from, to, brilliant: current.brilliant };
+  }
+  const key = JSON.stringify(payload);
+  if (key === overlaySent) return;
+  overlaySent = key;
+  window.chesslensDesktop.highlight(payload);
+}
+
+reader = new ScreenReader({
   preview: $('screenPreview'),
   onStatus: (text) => { $('screenStatus').textContent = text; },
   onPosition: followScreen,
+  onFrame: () => updateOverlay(),
 });
 
 /** Brings this board in line with the board read from the screen. */
@@ -814,7 +839,8 @@ async function fillScreenSources() {
   const previous = select.value || load('screenSource', '');
   select.textContent = '';
   // Browser windows showing a chess site first, then the other windows, then whole screens.
-  const rank = (s) => (/chess|lichess/i.test(s.name) ? 0 : s.screen ? 2 : 1);
+  // Whole screens first (needed for the on-screen highlights), then chess sites, then the rest.
+  const rank = (s) => (s.screen ? 0 : /chess|lichess/i.test(s.name) ? 1 : 2);
   sources.sort((a, b) => rank(a) - rank(b));
   for (const s of sources) select.append(new Option(s.screen ? `Screen: ${s.name}` : s.name, s.id));
   if ([...select.options].some((o) => o.value === previous)) select.value = previous;
