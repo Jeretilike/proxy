@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChessLens</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="layout">
+    <section class="board-area">
+      <div class="eval-bar" id="evalBar" title="Evaluation (White's point of view)">
+        <div class="eval-fill" id="evalFill"></div>
+        <span class="eval-label" id="evalLabel">0.0</span>
+      </div>
+      <div class="board-wrap">
+        <div class="board" id="board" aria-label="Chess board"></div>
+        <svg class="arrows" id="arrows" viewBox="0 0 8 8" aria-hidden="true"></svg>
+        <div class="promotion hidden" id="promotion"></div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <header class="brand">
+        <h1>ChessLens</h1>
+        <span class="engine-name" id="engineName">Stockfish</span>
+      </header>
+
+      <div class="segmented" role="radiogroup" aria-label="Mode" id="modeSwitch">
+        <button role="radio" data-mode="best" aria-checked="true">Best</button>
+        <button role="radio" data-mode="brilliant" aria-checked="false">Brilliant <span class="bang">!!</span></button>
+      </div>
+      <p class="mode-help" id="modeHelp"></p>
+
+      <div class="card suggestion" id="suggestion">
+        <div class="suggestion-top">
+          <span class="badge hidden" id="badge">!!</span>
+          <span class="suggestion-move" id="suggestionMove">—</span>
+          <span class="suggestion-eval" id="suggestionEval"></span>
+        </div>
+        <p class="suggestion-note" id="suggestionNote">Starting Stockfish…</p>
+        <div class="row">
+          <button class="primary" id="playIt" disabled>Play it <kbd>Space</kbd></button>
+          <button id="sayAgain" disabled>Say it again</button>
+        </div>
+      </div>
+
+      <div class="row player">
+        <span>You play</span>
+        <div class="segmented small" role="radiogroup" aria-label="Your color" id="colorSwitch">
+          <button role="radio" data-color="w" aria-checked="true">White</button>
+          <button role="radio" data-color="b" aria-checked="false">Black</button>
+        </div>
+      </div>
+
+      <p class="status" id="status"></p>
+
+      <ol class="moves" id="moves"></ol>
+
+      <div class="row wrap">
+        <button id="undo">Undo</button>
+        <button id="newGame">New game</button>
+        <button id="flip">Flip</button>
+        <button id="setPosition">Set position…</button>
+        <button id="openSettings">Settings</button>
+      </div>
+    </aside>
+  </main>
+
+  <div class="edit-bar hidden" id="editBar">
+    <span>Edit the board: pick a piece, then click squares. Right-click clears a square.</span>
+    <div class="palette" id="palette"></div>
+    <div class="segmented small" role="radiogroup" aria-label="Side to move" id="editTurn">
+      <button role="radio" data-turn="w" aria-checked="true">White to move</button>
+      <button role="radio" data-turn="b" aria-checked="false">Black to move</button>
+    </div>
+    <button id="editClear">Clear</button>
+    <button id="editStart">Start position</button>
+    <button class="primary" id="editDone">Done</button>
+    <button id="editCancel">Cancel</button>
+  </div>
+
+  <dialog id="positionDialog">
+    <form method="dialog">
+      <h2>Set position</h2>
+      <p>Paste a FEN or a PGN (for example from chess.com: <em>Share → PGN or FEN</em>), or edit the board by hand.</p>
+      <textarea id="positionText" rows="6" spellcheck="false" placeholder="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"></textarea>
+      <p class="error" id="positionError"></p>
+      <div class="row end">
+        <button value="edit" id="editBoard">Edit board by hand</button>
+        <button value="cancel">Cancel</button>
+        <button value="load" class="primary" id="loadPosition">Load</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settingsDialog">
+    <form method="dialog">
+      <h2>Settings</h2>
+      <label class="check"><input type="checkbox" id="voice"> Say the move out loud</label>
+      <label class="check"><input type="checkbox" id="speakEval"> Also say the evaluation</label>
+      <label>Voice
+        <select id="voiceName"></select>
+      </label>
+      <label>Thinking time
+        <select id="thinkTime">
+          <option value="1000">1 second</option>
+          <option value="2000">2 seconds</option>
+          <option value="3000">3 seconds</option>
+          <option value="5000">5 seconds</option>
+          <option value="10000">10 seconds</option>
+        </select>
+      </label>
+      <label>Brilliant mode looks at
+        <select id="multiPv">
+          <option value="4">4 candidate moves</option>
+          <option value="6">6 candidate moves</option>
+          <option value="10">10 candidate moves</option>
+        </select>
+      </label>
+      <div class="row end">
+        <button value="close" class="primary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
