@@ -79,13 +79,13 @@ export class Engine {
    * { move, cp, mate, depth, pv } with scores from the side to move's point of view.
    * Calls are queued; `onUpdate(lines)` is called as the search deepens.
    */
-  analyze(fen, { movetime, multipv = 1, onUpdate } = {}) {
-    const run = this.busy.then(() => this.run(fen, movetime, multipv, onUpdate));
+  analyze(fen, { movetime, multipv = 1, skill = 20, onUpdate } = {}) {
+    const run = this.busy.then(() => this.run(fen, movetime, multipv, skill, onUpdate));
     this.busy = run.catch(() => {});
     return run;
   }
 
-  async run(fen, movetime, multipv, onUpdate) {
+  async run(fen, movetime, multipv, skill, onUpdate) {
     await this.start();
     return new Promise((resolve, reject) => {
       const lines = new Map();
@@ -129,6 +129,8 @@ export class Engine {
       this.listeners.add(listener);
       this.current = fen;
       this.send(`setoption name MultiPV value ${multipv}`);
+      // Lower skill when Stockfish plays as your opponent; full strength for suggestions.
+      this.send(`setoption name Skill Level value ${skill}`);
       this.send(`position fen ${fen}`);
       this.send(`go movetime ${movetime}`);
     });

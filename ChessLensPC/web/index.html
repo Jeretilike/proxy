@@ -4,31 +4,62 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ChessLens</title>
+  <link rel="stylesheet" href="vendor/pieces.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-new" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-flip" viewBox="0 0 24 24"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 12h16M12 4v16" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-mini" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-screen" viewBox="0 0 24 24"><path d="M3 5h18v11H3zM8 20h8M12 16v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
   <main class="layout">
     <section class="board-area">
       <div class="eval-bar" id="evalBar" title="Evaluation (White's point of view)">
         <div class="eval-fill" id="evalFill"></div>
         <span class="eval-label" id="evalLabel">0.0</span>
       </div>
-      <div class="board-wrap">
-        <div class="board" id="board" aria-label="Chess board"></div>
-        <svg class="arrows" id="arrows" viewBox="0 0 8 8" aria-hidden="true"></svg>
-        <div class="promotion hidden" id="promotion"></div>
+      <div class="board-column">
+        <div class="player" id="topPlayer">
+          <span class="avatar" id="topAvatar"></span>
+          <span class="player-name" id="topName">Opponent</span>
+          <span class="captured" id="topCaptured"></span>
+          <span class="thinking hidden" id="topThinking">thinking…</span>
+        </div>
+        <div class="board-wrap">
+          <div class="board theme-green" id="board" aria-label="Chess board"></div>
+          <svg class="arrows" id="arrows" viewBox="0 0 8 8" aria-hidden="true"></svg>
+          <div class="promotion hidden" id="promotion"></div>
+          <div class="game-over hidden" id="gameOver"></div>
+        </div>
+        <div class="player" id="bottomPlayer">
+          <span class="avatar" id="bottomAvatar"></span>
+          <span class="player-name" id="bottomName">You</span>
+          <span class="captured" id="bottomCaptured"></span>
+          <span class="thinking hidden" id="bottomThinking">thinking…</span>
+        </div>
       </div>
     </section>
 
     <aside class="panel">
       <header class="brand">
-        <h1>ChessLens</h1>
-        <span class="engine-name" id="engineName">Stockfish</span>
-        <button class="small" id="miniToggle" title="Shrink to a tiny box that stays on top">Mini</button>
+        <span class="logo" aria-hidden="true"></span>
+        <div class="brand-text">
+          <h1>ChessLens</h1>
+          <span class="engine-name" id="engineName">Starting Stockfish…</span>
+        </div>
+        <button class="icon" id="miniToggle" title="Mini: a tiny box that stays on top"><svg><use href="#i-mini"/></svg></button>
+        <button class="icon" id="openSettings" title="Settings"><svg><use href="#i-gear"/></svg></button>
       </header>
 
-      <div class="segmented" role="radiogroup" aria-label="Mode" id="modeSwitch">
-        <button role="radio" data-mode="best" aria-checked="true">Best</button>
+      <div class="segmented big" role="radiogroup" aria-label="Mode" id="modeSwitch">
+        <button role="radio" data-mode="best" aria-checked="true">Best move</button>
         <button role="radio" data-mode="brilliant" aria-checked="false">Brilliant <span class="bang">!!</span></button>
       </div>
       <p class="mode-help" id="modeHelp"></p>
@@ -40,9 +71,9 @@
           <span class="suggestion-eval" id="suggestionEval"></span>
         </div>
         <p class="suggestion-note" id="suggestionNote">Starting Stockfish…</p>
-        <div class="row">
+        <div class="row actions">
           <button class="primary" id="playIt" disabled>Play it <kbd>Space</kbd></button>
-          <button id="sayAgain" disabled>Say it again</button>
+          <button class="icon" id="sayAgain" disabled title="Say it again"><svg><use href="#i-speaker"/></svg></button>
         </div>
         <div class="row mini-bar">
           <button class="small" id="miniMode" title="Switch between Best and Brilliant">Best</button>
@@ -51,9 +82,37 @@
         </div>
       </div>
 
-      <div class="card screen-card" id="screenCard">
+      <div class="lines" id="lines" aria-label="Engine lines"></div>
+
+      <div class="card setup">
+        <div class="row between">
+          <span class="label">You play</span>
+          <div class="segmented small" role="radiogroup" aria-label="Your color" id="colorSwitch">
+            <button role="radio" data-color="w" aria-checked="true">White</button>
+            <button role="radio" data-color="b" aria-checked="false">Black</button>
+          </div>
+        </div>
+        <div class="row between">
+          <span class="label">Opponent</span>
+          <div class="segmented small" role="radiogroup" aria-label="Opponent" id="opponentSwitch">
+            <button role="radio" data-opponent="manual" aria-checked="true" title="You play both sides, or follow a game">Board / screen</button>
+            <button role="radio" data-opponent="engine" aria-checked="false" title="Play against Stockfish">Stockfish</button>
+          </div>
+        </div>
+        <div class="row between level-row hidden" id="levelRow">
+          <span class="label">Strength</span>
+          <input type="range" id="level" min="1" max="10" step="1" value="4">
+          <span class="level-value" id="levelValue">4</span>
+        </div>
+      </div>
+
+      <details class="card screen-card" id="screenCard">
+        <summary>
+          <svg class="summary-icon"><use href="#i-screen"/></svg>
+          <span>Read my screen</span>
+          <span class="live hidden" id="screenLive">LIVE</span>
+        </summary>
         <div class="row">
-          <strong>Read my screen</strong>
           <select id="screenSource" title="Screen or window to read"></select>
           <button class="primary" id="screenToggle">Start</button>
         </div>
@@ -67,32 +126,25 @@
             </div>
           </div>
         </div>
-      </div>
-
-      <div class="row player">
-        <span>You play</span>
-        <div class="segmented small" role="radiogroup" aria-label="Your color" id="colorSwitch">
-          <button role="radio" data-color="w" aria-checked="true">White</button>
-          <button role="radio" data-color="b" aria-checked="false">Black</button>
-        </div>
-      </div>
+      </details>
 
       <p class="status" id="status"></p>
 
       <ol class="moves" id="moves"></ol>
 
-      <div class="row wrap">
-        <button id="undo">Undo</button>
-        <button id="newGame">New game</button>
-        <button id="flip">Flip</button>
-        <button id="setPosition">Set position…</button>
-        <button id="openSettings">Settings</button>
+      <div class="toolbar">
+        <button id="undo" title="Undo (Ctrl+Z)"><svg><use href="#i-undo"/></svg><span>Undo</span></button>
+        <button id="newGame" title="New game"><svg><use href="#i-new"/></svg><span>New</span></button>
+        <button id="flip" title="Flip board (F)"><svg><use href="#i-flip"/></svg><span>Flip</span></button>
+        <button id="setPosition" title="Set position: FEN, PGN or by hand"><svg><use href="#i-board"/></svg><span>Position</span></button>
       </div>
     </aside>
   </main>
 
+  <div class="toast hidden" id="toast"></div>
+
   <div class="edit-bar hidden" id="editBar">
-    <span>Edit the board: pick a piece, then click squares. Right-click clears a square.</span>
+    <span>Pick a piece, then click squares. Right-click clears a square.</span>
     <div class="palette" id="palette"></div>
     <div class="segmented small" role="radiogroup" aria-label="Side to move" id="editTurn">
       <button role="radio" data-turn="w" aria-checked="true">White to move</button>
@@ -107,11 +159,11 @@
   <dialog id="positionDialog">
     <form method="dialog">
       <h2>Set position</h2>
-      <p>Paste a FEN or a PGN (for example from chess.com: <em>Share → PGN or FEN</em>), or edit the board by hand.</p>
+      <p>Paste a FEN or a PGN (for example from chess.com: <em>Share → PGN or FEN</em>), or set up the board by hand.</p>
       <textarea id="positionText" rows="6" spellcheck="false" placeholder="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"></textarea>
       <p class="error" id="positionError"></p>
       <div class="row end">
-        <button value="edit" id="editBoard">Edit board by hand</button>
+        <button value="edit" id="editBoard">Set up by hand</button>
         <button value="cancel">Cancel</button>
         <button value="load" class="primary" id="loadPosition">Load</button>
       </div>
@@ -121,28 +173,50 @@
   <dialog id="settingsDialog">
     <form method="dialog">
       <h2>Settings</h2>
-      <label class="check"><input type="checkbox" id="highlight"> Outline my move on the chess site (when reading a whole screen)</label>
-      <label class="check"><input type="checkbox" id="voice"> Say the move out loud</label>
-      <label class="check"><input type="checkbox" id="speakEval"> Also say the evaluation</label>
-      <label>Voice
-        <select id="voiceName"></select>
-      </label>
-      <label>Thinking time
-        <select id="thinkTime">
-          <option value="1000">1 second</option>
-          <option value="2000">2 seconds</option>
-          <option value="3000">3 seconds</option>
-          <option value="5000">5 seconds</option>
-          <option value="10000">10 seconds</option>
-        </select>
-      </label>
-      <label>Brilliant mode looks at
-        <select id="multiPv">
-          <option value="4">4 candidate moves</option>
-          <option value="6">6 candidate moves</option>
-          <option value="10">10 candidate moves</option>
-        </select>
-      </label>
+      <fieldset>
+        <legend>Voice</legend>
+        <label class="check"><input type="checkbox" id="voice"> Say the move out loud</label>
+        <label class="check"><input type="checkbox" id="speakEval"> Also say the evaluation</label>
+        <label>Voice
+          <select id="voiceName"></select>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>Look and sound</legend>
+        <label>Board colours
+          <select id="boardTheme">
+            <option value="green">Green</option>
+            <option value="brown">Wood</option>
+            <option value="blue">Blue</option>
+            <option value="gray">Slate</option>
+            <option value="purple">Purple</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="sounds"> Move sounds</label>
+        <label class="check"><input type="checkbox" id="showArrow"> Show the move as an arrow on this board</label>
+        <label class="check"><input type="checkbox" id="highlight"> Outline my move on the chess site (when reading a whole screen)</label>
+      </fieldset>
+      <fieldset>
+        <legend>Engine</legend>
+        <label>Thinking time
+          <select id="thinkTime">
+            <option value="500">Half a second</option>
+            <option value="1000">1 second</option>
+            <option value="2000">2 seconds</option>
+            <option value="3000">3 seconds</option>
+            <option value="5000">5 seconds</option>
+            <option value="10000">10 seconds</option>
+          </select>
+        </label>
+        <label>Brilliant mode looks at
+          <select id="multiPv">
+            <option value="4">4 candidate moves</option>
+            <option value="6">6 candidate moves</option>
+            <option value="10">10 candidate moves</option>
+          </select>
+        </label>
+      </fieldset>
+      <p class="shortcuts"><kbd>Space</kbd> play the move · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>F</kbd> flip · <kbd>M</kbd> mini</p>
       <div class="row end">
         <button value="close" class="primary">Done</button>
       </div>
