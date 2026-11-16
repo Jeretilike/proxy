@@ -12,6 +12,7 @@ const server = await serve();
 const base = `http://127.0.0.1:${server.address().port}/`;
 
 // The "chess site", in a normal browser window on the right of the screen.
+console.log('launching browser');
 const browser = await chromium.launch({ headless: false, args: ['--window-position=900,0', '--window-size=1000,1000'] });
 const site = await browser.newPage({ viewport: { width: 980, height: 900 } });
 await site.goto(base + 'index.html');
@@ -19,10 +20,13 @@ await site.evaluate(() => { document.title = 'Fake Chess Site'; });
 const theme = { name: 'green', light: '#eeeed2', dark: '#769656', page: '#312e2b' };
 const draw = (fen, last = null) => drawSite(site, fen, { theme, style: 'filled', size: 640, left: 40, top: 120, whiteAtBottom: true, last });
 await draw(new Chess().fen());
+console.log('site drawn');
 
 // ChessLens on the left.
 const app = await _electron.launch({ executablePath: require('electron'), args: ['.', '--no-sandbox'] });
+console.log('electron launched');
 const win = await app.firstWindow();
+console.log('window open');
 await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ x: 0, y: 0, width: 960, height: 760 }));
 await win.waitForFunction(() => window.chesslens?.suggestion, null, { timeout: 120000 });
 await win.evaluate(() => { window.chesslens.settings.voice = false; });

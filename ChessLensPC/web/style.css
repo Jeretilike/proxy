@@ -158,7 +158,7 @@ kbd { font: 600 10.5px/1 Consolas, monospace; opacity: 0.75; border: 1px solid c
   background: rgba(0, 0, 0, 0.6);
   border-radius: 6px;
 }
-.promotion button { width: 11%; aspect-ratio: 1; height: auto; padding: 0; background-color: var(--light-square); background-position: center; background-size: 90%; background-repeat: no-repeat; border: none; box-shadow: var(--shadow); }
+.promotion button { width: 11%; aspect-ratio: 1; height: auto; padding: 0; background-color: #eeeed2; background-position: center; background-size: 90%; background-repeat: no-repeat; border: none; box-shadow: var(--shadow); }
 .promotion button:hover:not(:disabled) { background-color: #fff; }
 
 .game-over {
@@ -197,12 +197,13 @@ kbd { font: 600 10.5px/1 Consolas, monospace; opacity: 0.75; border: 1px solid c
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
   background: var(--panel);
   border: 1px solid #2d2a25;
   border-radius: 16px;
   padding: 16px;
   min-height: 0;
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 
@@ -234,7 +235,7 @@ kbd { font: 600 10.5px/1 Consolas, monospace; opacity: 0.75; border: 1px solid c
 .suggestion-eval { margin-left: auto; background: var(--bg); border-radius: 7px; padding: 3px 8px; color: var(--text); font-weight: 700; font-size: 13px; font-variant-numeric: tabular-nums; }
 .suggestion-eval:empty { display: none; }
 .badge { background: var(--brilliant); color: #fff; font-weight: 900; border-radius: 50%; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; flex: none; }
-.suggestion-note { margin: 6px 0 12px; color: var(--muted); min-height: 1.4em; font-size: 13px; }
+.suggestion-note { margin: 4px 0 10px; color: var(--muted); min-height: 1.4em; font-size: 13px; }
 .suggestion.brilliant .suggestion-note { color: var(--brilliant); }
 .actions .primary { flex: 1; }
 
@@ -262,8 +263,8 @@ kbd { font: 600 10.5px/1 Consolas, monospace; opacity: 0.75; border: 1px solid c
 .status.warn { color: var(--danger); }
 
 .moves {
-  flex: 1;
-  min-height: 60px;
+  flex: 1 1 60px;
+  min-height: 44px;
   overflow-y: auto;
   margin: 0;
   padding: 6px 0;
@@ -281,7 +282,7 @@ kbd { font: 600 10.5px/1 Consolas, monospace; opacity: 0.75; border: 1px solid c
 .moves .brilliant-move { color: var(--brilliant); font-weight: 800; }
 .moves:empty::before { content: "Moves appear here."; display: block; padding: 6px 12px; color: var(--faint); font-size: 13px; }
 
-.toolbar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.toolbar { flex: none; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .toolbar button { flex-direction: column; gap: 2px; padding: 7px 4px; font-size: 11.5px; color: var(--muted); }
 .toolbar button:hover:not(:disabled) { color: var(--text); }
 

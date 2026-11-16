@@ -701,7 +701,7 @@ function setSegmented(groupId, attribute, value) {
 
 function renderModeHelp() {
   $('modeHelp').textContent = settings.mode === 'brilliant'
-    ? 'Looks for a piece sacrifice that is the best move or almost as good, the kind chess.com marks “!!”. If there isn’t one, you get the best move.'
+    ? 'Finds chess.com-style “!!” sacrifices that are best or almost best. Otherwise, the best move.'
     : 'Always the strongest move Stockfish finds.';
 }
 
@@ -1134,7 +1134,7 @@ function renderMiniBar() {
   const brilliant = settings.mode === 'brilliant';
   $('miniMode').textContent = brilliant ? 'Brilliant !!' : 'Best';
   $('miniMode').classList.toggle('brilliant', brilliant);
-  $('miniRead').textContent = reader.running ? 'Reading' : 'Read screen';
+  $('miniRead').textContent = reader.running ? 'Reading' : 'Screen';
   $('miniRead').classList.toggle('on', reader.running);
 }
 
