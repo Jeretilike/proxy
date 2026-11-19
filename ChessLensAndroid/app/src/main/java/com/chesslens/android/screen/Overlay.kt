@@ -41,6 +41,15 @@ class Overlay(
     private lateinit var infoText: TextView
     private lateinit var modeButton: TextView
     private lateinit var bothButton: TextView
+    private val chips = mutableListOf<TextView>()
+
+    /** Where the board is on screen, so the bubble can keep out of its way. */
+    private var boardOnScreen: RectF? = null
+    private var dragging = false
+
+    private val prefs = context.getSharedPreferences("chesslens_screen", Context.MODE_PRIVATE)
+    private val sizes = floatArrayOf(0.8f, 1f, 1.3f)
+    private var sizeIndex = prefs.getInt("bubbleSize", 1).coerceIn(0, 2)
 
     /** Where the bubble is on screen, read from the capture thread. */
     @Volatile private var bubbleBounds: Rect? = null
@@ -107,21 +116,22 @@ class Overlay(
             maxWidth = dp(260f).toInt()
         }
         val buttons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        chips.clear()
         fun chip(label: String, onClick: () -> Unit) = TextView(context).apply {
             text = label
             setTextColor(Color.WHITE)
-            textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(12f).toInt(), dp(9f).toInt(), dp(12f).toInt(), dp(9f).toInt())
             isClickable = true
             background = GradientDrawable().apply { cornerRadius = dp(8f); setColor(Color.rgb(58, 54, 48)) }
             setOnClickListener { onClick() }
+            chips += this
         }
         modeButton = chip("Best") { onToggleMode() }
         val turn = chip("⇄ Turn") { onFlipTurn() }
         bothButton = chip("Both sides") { onToggleBoth() }
         val stop = chip("✕") { onStop() }
-        for ((i, b) in listOf(modeButton, bothButton, turn, stop).withIndex()) {
+        val size = chip("Aa") { nextSize() }
+        for ((i, b) in listOf(modeButton, bothButton, turn, size, stop).withIndex()) {
             if (i > 0) buttons.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
             buttons.addView(b)
         }
@@ -130,6 +140,7 @@ class Overlay(
         root.addView(infoText)
         root.addView(View(context), LinearLayout.LayoutParams(1, dp(6f).toInt()))
         root.addView(buttons)
+        applySize()
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, overlayType,
@@ -151,6 +162,11 @@ class Overlay(
         root.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startX = params.x; startY = params.y; dragging = false; return@setOnTouchListener true }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    // Dropped on the board? Slide off it again.
+                    if (dragging) root.post { recordBounds(root); keepOffBoard() }
+                    dragging = false
+                }
                 MotionEvent.ACTION_MOVE -> {
                     if (abs(e.rawX - downX) + abs(e.rawY - downY) > dp(6f)) dragging = true
                     if (dragging) {
@@ -167,6 +183,73 @@ class Overlay(
         wm.addView(root, params)
         bubble = root
         bubbleParams = params
+    }
+
+    /** Bubble sizes: small, medium, large (the Aa button). */
+    private fun nextSize() {
+        sizeIndex = (sizeIndex + 1) % sizes.size
+        prefs.edit().putInt("bubbleSize", sizeIndex).apply()
+        applySize()
+        bubble?.post { bubble?.let { recordBounds(it) }; keepOffBoard() }
+    }
+
+    private fun applySize() {
+        val s = sizes[sizeIndex]
+        moveText.textSize = 26f * s
+        noteText.textSize = 12f * s
+        noteText.maxWidth = dp(220f * s).toInt()
+        infoText.textSize = 10f * s
+        infoText.maxWidth = dp(260f * s).toInt()
+        for (c in chips) {
+            c.textSize = 13f * s
+            c.setPadding(dp(11f * s).toInt(), dp(8f * s).toInt(), dp(11f * s).toInt(), dp(8f * s).toInt())
+        }
+        bubble?.setPadding(dp(12f * s).toInt(), dp(8f * s).toInt(), dp(12f * s).toInt(), dp(8f * s).toInt())
+    }
+
+    /** Tells the bubble where the board is (screen pixels); it moves if it's in the way. */
+    fun avoidBoard(board: RectF) {
+        val old = boardOnScreen
+        boardOnScreen = board
+        if (old == null || abs(old.top - board.top) > 4 || abs(old.bottom - board.bottom) > 4 || abs(old.left - board.left) > 4) keepOffBoard()
+        else if (!dragging) keepOffBoard()
+    }
+
+    /** Moves the bubble above or below the board, wherever it fits, if it covers the board. */
+    private fun keepOffBoard() {
+        if (dragging) return
+        val root = bubble ?: return
+        val params = bubbleParams ?: return
+        val board = boardOnScreen ?: return
+        if (root.width == 0 || root.height == 0) return
+        val loc = IntArray(2)
+        root.getLocationOnScreen(loc)
+        val w = root.width
+        val h = root.height
+        val margin = dp(8f)
+        val current = RectF(loc[0].toFloat(), loc[1].toFloat(), (loc[0] + w).toFloat(), (loc[1] + h).toFloat())
+        val screen = wm.maximumWindowMetrics.bounds
+        val topLimit = dp(28f) // below the status bar
+        val bottomLimit = screen.height() - dp(28f) // above the navigation bar
+        var targetX = loc[0].toFloat().coerceIn(margin, (screen.width() - w - margin).coerceAtLeast(margin))
+        var targetY = loc[1].toFloat()
+        if (RectF.intersects(current, RectF(board.left - margin, board.top - margin, board.right + margin, board.bottom + margin))) {
+            val above = board.top - margin - topLimit
+            val below = bottomLimit - (board.bottom + margin)
+            targetY = when {
+                above >= h -> board.top - margin - h
+                below >= h -> board.bottom + margin
+                above >= below -> topLimit
+                else -> bottomLimit - h
+            }
+        }
+        val dx = (targetX - loc[0]).toInt()
+        val dy = (targetY - loc[1]).toInt()
+        if (dx == 0 && dy == 0) return
+        params.x += dx
+        params.y += dy
+        wm.updateViewLayout(root, params)
+        root.post { recordBounds(root) }
     }
 
     private fun recordBounds(v: View) {

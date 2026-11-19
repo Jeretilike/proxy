@@ -241,6 +241,12 @@ class ScreenWatchService : Service() {
             return
         }
         grid = found
+        // Keep the bubble off the board (it would hide the pieces under it).
+        val boardRect = android.graphics.RectF(
+            (found.x / scale).toFloat(), (found.y / scale).toFloat(),
+            ((found.x + 8 * found.cw) / scale).toFloat(), ((found.y + 8 * found.ch) / scale).toFloat(),
+        )
+        main.post { overlay.avoidBoard(boardRect) }
         val squares = ScreenVision.readSquares(img, found)
         ScreenVision.learnFromStart(squares)?.let { (learned, bottomWhite) ->
             val first = templates.size < 12
