@@ -99,4 +99,27 @@ class ScreenAndBrilliantTest {
         assertEquals(total, exact)
         assertEquals(total, mover)
     }
+
+    /** A frame marked by hand a few pixels off still reads the board exactly. */
+    @Test fun handMarkedFrameSnapsToTheBoard() {
+        val dir = System.getenv("CHESSLENS_SCREEN_SHOTS")?.let(::File)
+        assumeTrue(dir != null && dir.isDirectory)
+        fun load(f: File): RgbImage {
+            val (w, h) = f.name.substringAfterLast("_").removeSuffix(".rgb").split("x").map { it.toInt() }
+            val b = f.readBytes()
+            return RgbImage(w, h, IntArray(w * h) { i -> ((b[i * 3].toInt() and 255) shl 16) or ((b[i * 3 + 1].toInt() and 255) shl 8) or (b[i * 3 + 2].toInt() and 255) })
+        }
+        val start = load(dir!!.listFiles()!!.first { it.name.startsWith("green-w-0start") && it.name.endsWith(".rgb") })
+        val game = dir.listFiles()!!.first { it.name.startsWith("green-w-2_") }
+        val exact = ScreenVision.findBoard(start)!!
+        // Off by 3 pixels and slightly too big, as a finger might leave it.
+        val marked = ScreenGrid(exact.x + 3, exact.y - 3, exact.cw * 1.02, exact.ch * 1.02)
+        val snapped = ScreenVision.snap(start, marked)
+        println("marked ${"%.1f".format(marked.x)},${"%.1f".format(marked.y)} cell ${"%.2f".format(marked.cw)} -> snapped ${"%.1f".format(snapped.x)},${"%.1f".format(snapped.y)} cell ${"%.2f".format(snapped.cw)} (exact ${"%.1f".format(exact.x)},${"%.1f".format(exact.y)} cell ${"%.2f".format(exact.cw)})")
+        val templates = ScreenVision.learnFromStart(ScreenVision.readSquares(start, snapped))!!.first
+        val img = load(game)
+        val reading = ScreenVision.recognize(ScreenVision.readSquares(img, ScreenVision.snap(img, marked)), templates, true)!!
+        val want = File(game.parentFile, game.name.substringBeforeLast("_") + ".txt").readLines()[0].split(" ")[0]
+        assertEquals(want, reading.board.placementFen)
+    }
 }

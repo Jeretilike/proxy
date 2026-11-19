@@ -242,6 +242,15 @@ object ScreenVision {
         return if (horizontal) g.copy(x = bestOrigin, cw = bestCell) else g.copy(y = bestOrigin, ch = bestCell)
     }
 
+    /** Fine-tunes a board marked by hand onto the colour edges between its squares. */
+    fun snap(img: RgbImage, g: ScreenGrid): ScreenGrid {
+        val refined = refineAxis(img, refineAxis(img, g, true), false)
+        // Only accept small corrections; otherwise keep what was marked.
+        val ok = kotlin.math.abs(refined.x - g.x) <= g.cw * 0.15 && kotlin.math.abs(refined.y - g.y) <= g.ch * 0.15 &&
+            kotlin.math.abs(refined.cw - g.cw) <= g.cw * 0.05
+        return if (ok) refined else g
+    }
+
     /** Finds the board, checking [previous] first (cheap) before searching the whole image. */
     fun findBoard(img: RgbImage, previous: ScreenGrid? = null): ScreenGrid? {
         if (previous != null) {

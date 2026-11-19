@@ -120,7 +120,10 @@ class ScreenWatchService : Service() {
         engine = StockfishEngine(this)
         speaker = Speaker(this)
         templates = ScreenVision.deserialize(prefs.getString("pieces", null))
-        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onToggleBoth = ::toggleBothSides, onStop = { stopSelf() })
+        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onToggleBoth = ::toggleBothSides, onPickBoard = ::pickBoard, onStop = { stopSelf() })
+        picker = BoardPicker(this, onDone = { rect -> setManualBoard(rect) }, onAuto = { setManualBoard(null) })
+        manualBoard = prefs.getString("manualBoard", null)?.split(",")?.mapNotNull { it.toFloatOrNull() }
+            ?.takeIf { it.size == 4 }?.let { android.graphics.RectF(it[0], it[1], it[2], it[3]) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -227,8 +230,32 @@ class ScreenWatchService : Service() {
         return RgbImage(w, hgt, pixels)
     }
 
+    private lateinit var picker: BoardPicker
+    /** The board marked by hand (screen pixels), or null to find it automatically. */
+    @Volatile private var manualBoard: android.graphics.RectF? = null
+
+    private fun pickBoard() {
+        val start = manualBoard ?: grid?.let {
+            android.graphics.RectF((it.x / scale).toFloat(), (it.y / scale).toFloat(), ((it.x + 8 * it.cw) / scale).toFloat(), ((it.y + 8 * it.ch) / scale).toFloat())
+        }
+        picker.show(start)
+    }
+
+    private fun setManualBoard(rect: android.graphics.RectF?) {
+        manualBoard = rect
+        prefs.edit().putString("manualBoard", rect?.let { "${it.left},${it.top},${it.right},${it.bottom}" }).apply()
+        grid = null
+        lastEmitted = null
+        overlay.setStatus(if (rect != null) "Reading only inside the frame you marked." else "Finding the board automatically.")
+    }
+
     private fun read(img: RgbImage) {
-        val found = ScreenVision.findBoard(img, grid)
+        // While the frame is being placed, the screen shows the frame, not the board.
+        if (picker.isShowing) return
+        val manual = manualBoard
+        val found = if (manual != null) {
+            ScreenVision.snap(img, ScreenGrid(manual.left * scale, manual.top * scale, manual.width() * scale / 8, manual.height() * scale / 8))
+        } else ScreenVision.findBoard(img, grid)
         boardSeen = when {
             found == null -> "no board"
             templates.size < 12 -> "board ✓, pieces not learned"
@@ -456,6 +483,7 @@ class ScreenWatchService : Service() {
         scope.cancel()
         engine.shutdown()
         overlay.hide()
+        picker.hide()
         projection = null
         super.onDestroy()
     }

@@ -30,6 +30,7 @@ class Overlay(
     private val onToggleMode: () -> Unit,
     private val onFlipTurn: () -> Unit,
     private val onToggleBoth: () -> Unit,
+    private val onPickBoard: () -> Unit,
     private val onStop: () -> Unit,
 ) {
     private val wm = context.getSystemService(WindowManager::class.java)
@@ -131,7 +132,9 @@ class Overlay(
         bothButton = chip("Both sides") { onToggleBoth() }
         val stop = chip("✕") { onStop() }
         val size = chip("Aa") { nextSize() }
-        for ((i, b) in listOf(modeButton, bothButton, turn, size, stop).withIndex()) {
+        val pick = chip("▢ Board") { onPickBoard() }
+        // Two rows so the bubble stays narrow.
+        for ((i, b) in listOf(modeButton, bothButton, turn).withIndex()) {
             if (i > 0) buttons.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
             buttons.addView(b)
         }
@@ -140,6 +143,13 @@ class Overlay(
         root.addView(infoText)
         root.addView(View(context), LinearLayout.LayoutParams(1, dp(6f).toInt()))
         root.addView(buttons)
+        val buttons2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((i, b) in listOf(pick, size, stop).withIndex()) {
+            if (i > 0) buttons2.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
+            buttons2.addView(b)
+        }
+        root.addView(View(context), LinearLayout.LayoutParams(1, dp(5f).toInt()))
+        root.addView(buttons2)
         applySize()
 
         val params = WindowManager.LayoutParams(
