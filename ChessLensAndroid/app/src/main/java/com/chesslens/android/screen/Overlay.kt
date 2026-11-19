@@ -25,7 +25,13 @@ import kotlin.math.abs
  * What ChessLens draws over the chess app: a small draggable bubble with the move, and outlines on
  * the move's two squares. Needs the "Display over other apps" permission.
  */
-class Overlay(private val context: Context, private val onToggleMode: () -> Unit, private val onFlipTurn: () -> Unit, private val onStop: () -> Unit) {
+class Overlay(
+    private val context: Context,
+    private val onToggleMode: () -> Unit,
+    private val onFlipTurn: () -> Unit,
+    private val onToggleBoth: () -> Unit,
+    private val onStop: () -> Unit,
+) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private var bubble: LinearLayout? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
@@ -33,6 +39,7 @@ class Overlay(private val context: Context, private val onToggleMode: () -> Unit
     private lateinit var moveText: TextView
     private lateinit var noteText: TextView
     private lateinit var modeButton: TextView
+    private lateinit var bothButton: TextView
 
     /** Where the bubble is on screen, read from the capture thread. */
     @Volatile private var bubbleBounds: Rect? = null
@@ -96,12 +103,12 @@ class Overlay(private val context: Context, private val onToggleMode: () -> Unit
         }
         modeButton = chip("Best") { onToggleMode() }
         val turn = chip("⇄ Turn") { onFlipTurn() }
-        val stop = chip("✕ Stop") { onStop() }
-        buttons.addView(modeButton)
-        buttons.addView(View(context), LinearLayout.LayoutParams(dp(6f).toInt(), 1))
-        buttons.addView(turn)
-        buttons.addView(View(context), LinearLayout.LayoutParams(dp(6f).toInt(), 1))
-        buttons.addView(stop)
+        bothButton = chip("Both sides") { onToggleBoth() }
+        val stop = chip("✕") { onStop() }
+        for ((i, b) in listOf(modeButton, bothButton, turn, stop).withIndex()) {
+            if (i > 0) buttons.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
+            buttons.addView(b)
+        }
         root.addView(moveText)
         root.addView(noteText)
         root.addView(View(context), LinearLayout.LayoutParams(1, dp(6f).toInt()))
@@ -163,6 +170,12 @@ class Overlay(private val context: Context, private val onToggleMode: () -> Unit
         if (bubble == null) return
         modeButton.text = if (brilliant) "Brilliant !!" else "Best"
         modeButton.setTextColor(if (brilliant) teal else Color.WHITE)
+    }
+
+    fun setBothSides(on: Boolean) {
+        if (bubble == null) return
+        (bothButton.background as? GradientDrawable)?.setColor(if (on) green else Color.rgb(58, 54, 48))
+        bothButton.setTextColor(if (on) Color.rgb(16, 31, 7) else Color.WHITE)
     }
 
     fun setStatus(text: String) {

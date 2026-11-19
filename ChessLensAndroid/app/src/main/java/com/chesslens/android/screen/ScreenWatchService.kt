@@ -102,6 +102,10 @@ class ScreenWatchService : Service() {
     private var brilliantMode: Boolean
         get() = prefs.getBoolean("brilliant", false)
         set(value) { prefs.edit().putBoolean("brilliant", value).apply() }
+    /** Playing both sides yourself (a board that doesn't flip): suggest for whoever is to move. */
+    private var bothSides: Boolean
+        get() = prefs.getBoolean("bothSides", false)
+        set(value) { prefs.edit().putBoolean("bothSides", value).apply() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -111,7 +115,7 @@ class ScreenWatchService : Service() {
         engine = StockfishEngine(this)
         speaker = Speaker(this)
         templates = ScreenVision.deserialize(prefs.getString("pieces", null))
-        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onStop = { stopSelf() })
+        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onToggleBoth = ::toggleBothSides, onStop = { stopSelf() })
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -161,6 +165,7 @@ class ScreenWatchService : Service() {
         runningFlow.value = true
         overlay.show()
         overlay.setMode(brilliantMode)
+        overlay.setBothSides(bothSides)
         overlay.setStatus(if (templates.size >= 12) "Looking for a chess board…" else "Open a new game once so I can learn your pieces.")
         scope.launch { try { engine.start() } catch (_: Exception) {} }
         h.postDelayed(::tick, INTERVAL_MS)
@@ -294,7 +299,7 @@ class ScreenWatchService : Service() {
             overlay.clearOutline()
             return
         }
-        if (position.sideToMove != player) {
+        if (!bothSides && position.sideToMove != player) {
             analysis?.cancel()
             analyzed = null
             overlay.setMove(null, false, "Opponent's move…")
@@ -359,6 +364,13 @@ class ScreenWatchService : Service() {
     /** The bubble's ⇄ button: whose turn it is, when the screen didn't make it clear. */
     private fun flipTurn() {
         position = position.copy(sideToMove = position.sideToMove.opposite, enPassant = null)
+        analyzed = null
+        update()
+    }
+
+    private fun toggleBothSides() {
+        bothSides = !bothSides
+        overlay.setBothSides(bothSides)
         analyzed = null
         update()
     }
