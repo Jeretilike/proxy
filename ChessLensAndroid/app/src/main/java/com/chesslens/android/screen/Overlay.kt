@@ -25,7 +25,7 @@ import kotlin.math.abs
  * What ChessLens draws over the chess app: a small draggable bubble with the move, and outlines on
  * the move's two squares. Needs the "Display over other apps" permission.
  */
-class Overlay(private val context: Context, private val onToggleMode: () -> Unit, private val onStop: () -> Unit) {
+class Overlay(private val context: Context, private val onToggleMode: () -> Unit, private val onFlipTurn: () -> Unit, private val onStop: () -> Unit) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private var bubble: LinearLayout? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
@@ -95,8 +95,11 @@ class Overlay(private val context: Context, private val onToggleMode: () -> Unit
             setOnClickListener { onClick() }
         }
         modeButton = chip("Best") { onToggleMode() }
+        val turn = chip("⇄ Turn") { onFlipTurn() }
         val stop = chip("✕ Stop") { onStop() }
         buttons.addView(modeButton)
+        buttons.addView(View(context), LinearLayout.LayoutParams(dp(6f).toInt(), 1))
+        buttons.addView(turn)
         buttons.addView(View(context), LinearLayout.LayoutParams(dp(6f).toInt(), 1))
         buttons.addView(stop)
         root.addView(moveText)

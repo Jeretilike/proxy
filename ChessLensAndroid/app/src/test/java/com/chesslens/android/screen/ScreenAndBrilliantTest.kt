@@ -67,7 +67,10 @@ class ScreenAndBrilliantTest {
                 val img = RgbImage(w, h, IntArray(w * h) { i ->
                     ((bytes[i * 3].toInt() and 255) shl 16) or ((bytes[i * 3 + 1].toInt() and 255) shl 8) or (bytes[i * 3 + 2].toInt() and 255)
                 })
-                val (fen, bottom) = File(file.parentFile, file.name.substringBeforeLast("_") + ".txt").readLines()
+                val info = File(file.parentFile, file.name.substringBeforeLast("_") + ".txt").readLines()
+                val fen = info[0]
+                val bottom = info[1]
+                val selected = info.getOrNull(2) == "selected"
                 val found = ScreenVision.findBoard(img, grid)
                 assertNotNull("$tag: board not found in ${file.name}", found)
                 grid = found
@@ -87,7 +90,9 @@ class ScreenAndBrilliantTest {
                 val want = fen.split(" ")[0]
                 if (reading.board.placementFen == want) exact++ else println("${file.name}: read ${reading.board.placementFen}\n   wanted $want")
                 val justMoved = if (fen.split(" ")[1] == "w") PieceColor.BLACK else PieceColor.WHITE
-                if (reading.lastMover == justMoved) mover++
+                // With a tapped piece also highlighted, the highlight mustn't be read as a move.
+                val expected = if (selected) null else justMoved
+                if (reading.lastMover == expected) mover++ else println("${file.name}: last mover ${reading.lastMover}, expected $expected")
             }
         }
         println("screenshots read exactly: $exact/$total; side that just moved right: $mover/$total")

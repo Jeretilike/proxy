@@ -421,12 +421,22 @@ export function recognize(squares, templates, previousWhiteAtBottom = true) {
   const placement = new Array(64).fill(null);
   for (let i = 0; i < 64; i++) placement[boardIndex(i, whiteAtBottom)] = screen[i];
 
-  // The last move's squares are highlighted; the piece standing on one of them just moved.
-  let lastMover = null;
-  for (const i of highlightedSquares(squares)) {
-    if (screen[i]) { lastMover = screen[i].color; break; }
-  }
-  return { placement, whiteAtBottom, lastMover };
+  return { placement, whiteAtBottom, lastMover: lastMoverFrom(highlightedSquares(squares), screen) };
+}
+
+/**
+ * Who just moved, from the last-move highlight, trusted only when it looks like one: the empty
+ * square a piece left plus the square it's on now (or a castling king and rook). A tapped,
+ * selected piece adds a highlighted square of its own, so it's never mistaken for a move.
+ */
+export function lastMoverFrom(highlights, screen) {
+  const occupied = highlights.map((i) => screen[i]).filter(Boolean);
+  const empty = highlights.length - occupied.length;
+  if (highlights.length === 2 && occupied.length === 1 && empty === 1) return occupied[0].color;
+  const kinds = new Set(occupied.map((p) => p.type));
+  if (highlights.length >= 3 && highlights.length <= 4 && empty >= 1 && occupied.length === 2 &&
+      kinds.has('k') && kinds.has('r') && occupied[0].color === occupied[1].color) return occupied[0].color;
+  return null;
 }
 
 /** "rnbqkbnr/pppppppp/…" from a placement (a1 = 0). */

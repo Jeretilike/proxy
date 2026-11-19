@@ -60,6 +60,14 @@ for (const theme of themes) {
       }
       await shot(`${tag}-${k}`, g.fen(), { ...layout, last }, `${g.fen()}\n${whiteAtBottom}`);
       n++;
+      // The player has tapped one of their pieces: the app highlights it too.
+      if (k === 1) {
+        const mine = g.moves({ verbose: true })[0];
+        if (mine) {
+          await shot(`${tag}-${k}sel`, g.fen(), { ...layout, last, selected: mine.from }, `${g.fen()}\n${whiteAtBottom}\nselected`);
+          n++;
+        }
+      }
     }
   }
 }

@@ -297,6 +297,22 @@ object ScreenVision {
         return squares.indices.filter { colorDistance(squares[it].bg, means[if (isLightCell(it)) 0 else 1]) > 45 }
     }
 
+    /**
+     * Who just moved, from the last-move highlight: only trusted when it looks like one: the empty
+     * square a piece left plus the square it's on now (or a castling king and rook). A tapped,
+     * selected piece adds a highlighted square of its own, so it's never mistaken for a move.
+     */
+    private fun lastMover(highlights: List<Int>, screen: Array<Piece?>): PieceColor? {
+        val occupied = highlights.mapNotNull { screen[it] }
+        val empty = highlights.size - occupied.size
+        if (highlights.size == 2 && occupied.size == 1 && empty == 1) return occupied[0].color
+        // Castling: sites highlight the king's squares, sometimes the rook's too.
+        if (highlights.size in 3..4 && empty >= 1 && occupied.size == 2 &&
+            occupied.map { it.kind }.toSet() == setOf(PieceKind.KING, PieceKind.ROOK) && occupied[0].color == occupied[1].color
+        ) return occupied[0].color
+        return null
+    }
+
     private fun distance(square: ScreenSquare, t: PieceTemplate): Double {
         var total = 0.0
         for (i in 0 until SIDE * SIDE) {
@@ -411,8 +427,7 @@ object ScreenVision {
             val p = screen[i] ?: continue
             board = board.with(Square.fromIndex(boardIndex(i, whiteAtBottom)), p)
         }
-        val lastMover = highlighted(squares).firstNotNullOfOrNull { screen[it]?.color }
-        return ScreenReading(board, whiteAtBottom, lastMover)
+        return ScreenReading(board, whiteAtBottom, lastMover(highlighted(squares), screen))
     }
 
     // -------------------------------------------------------------------------------------------

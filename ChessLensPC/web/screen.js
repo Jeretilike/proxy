@@ -166,9 +166,13 @@ export class ScreenReader {
     const reading = recognize(squares, this.templates, this.whiteAtBottom);
     if (!reading) {
       this.pending = null;
+      // The board may have shifted a little (scrolling, a banner): look for it afresh.
+      this.unreadable = (this.unreadable ?? 0) + 1;
+      if (this.unreadable >= 3) this.grid = null;
       this.onStatus('Board found, but a square is unclear (arrow, dragged piece…).');
       return;
     }
+    this.unreadable = 0;
     this.whiteAtBottom = reading.whiteAtBottom;
     const key = placementFen(reading.placement) + (reading.lastMover ?? '-') + reading.whiteAtBottom;
     // Only report a position seen twice in a row, so moving pieces aren't read mid-animation.

@@ -1,7 +1,7 @@
 // Draws a fake chess website with a board on it, for the screen-reading tests.
 
-export async function drawSite(site, fen, { theme, style, size, left, top, whiteAtBottom, last }) {
-  await site.evaluate(({ fen, theme, style, size, left, top, whiteAtBottom, last }) => {
+export async function drawSite(site, fen, { theme, style, size, left, top, whiteAtBottom, last, selected = null }) {
+  await site.evaluate(({ fen, theme, style, size, left, top, whiteAtBottom, last, selected }) => {
     const filled = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' };
     const outline = { k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙' };
     document.body.innerHTML = '';
@@ -26,7 +26,7 @@ export async function drawSite(site, fen, { theme, style, size, left, top, white
         const cell = document.createElement('div');
         const isLight = (row + col) % 2 === 0;
         cell.style.cssText = `position:relative;overflow:hidden;min-width:0;min-height:0;background:${isLight ? theme.light : theme.dark};display:flex;align-items:center;justify-content:center`;
-        if (last && (last.from === sq || last.to === sq)) {
+        if ((last && (last.from === sq || last.to === sq)) || sq === selected) {
           const hl = document.createElement('div');
           hl.style.cssText = 'position:absolute;inset:0;background:rgba(255,255,51,0.5)';
           cell.append(hl);
@@ -63,6 +63,6 @@ export async function drawSite(site, fen, { theme, style, size, left, top, white
       }
     }
     document.body.append(board);
-  }, { fen, theme, style, size, left, top, whiteAtBottom, last });
+  }, { fen, theme, style, size, left, top, whiteAtBottom, last, selected });
 }
 

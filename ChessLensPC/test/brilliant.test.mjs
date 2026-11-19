@@ -70,3 +70,17 @@ test('spoken moves', () => {
   assert.equal(spokenSan('Rad1'), 'rook on a to d1');
   assert.equal(spokenSan('Qh4xe1'), 'queen on h4 takes e1');
 });
+
+import { lastMoverFrom } from '../web/screen-vision.js';
+
+test('whose turn from the last-move highlight', () => {
+  const screen = new Array(64).fill(null);
+  screen[36] = { color: 'w', type: 'p' }; // the pawn that moved
+  screen[60] = { color: 'w', type: 'n' }; // a piece the player tapped
+  assert.equal(lastMoverFrom([52, 36], screen), 'w'); // empty square + moved piece
+  assert.equal(lastMoverFrom([52, 36, 60], screen), null); // plus a selected piece: not trusted
+  assert.equal(lastMoverFrom([60], screen), null); // only a selection
+  const castle = new Array(64).fill(null);
+  castle[62] = { color: 'w', type: 'k' }; castle[61] = { color: 'w', type: 'r' };
+  assert.equal(lastMoverFrom([60, 62, 63, 61], castle), 'w');
+});

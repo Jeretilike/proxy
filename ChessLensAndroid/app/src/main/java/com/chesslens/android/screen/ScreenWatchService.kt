@@ -89,6 +89,7 @@ class ScreenWatchService : Service() {
     private var whiteAtBottom = true
     private var pending: String? = null
     private var lastEmitted: String? = null
+    private var unreadable = 0
 
     // Game state (only touched on the main thread).
     private var position: ChessPosition = ChessPosition.START
@@ -110,7 +111,7 @@ class ScreenWatchService : Service() {
         engine = StockfishEngine(this)
         speaker = Speaker(this)
         templates = ScreenVision.deserialize(prefs.getString("pieces", null))
-        overlay = Overlay(this, onToggleMode = ::toggleMode, onStop = { stopSelf() })
+        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onStop = { stopSelf() })
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -236,9 +237,12 @@ class ScreenWatchService : Service() {
         val reading = ScreenVision.recognize(squares, templates, whiteAtBottom)
         if (reading == null) {
             pending = null
+            // The board may have shifted a little (scrolling, a banner): look for it afresh.
+            if (++unreadable >= 3) grid = null
             main.post { overlay.setStatus("A square is unclear (arrow, dragged piece…).") }
             return
         }
+        unreadable = 0
         whiteAtBottom = reading.whiteAtBottom
         val key = reading.board.placementFen + (reading.lastMover?.fenLetter ?: "-") + reading.whiteAtBottom
         if (pending != key) { pending = key; return }
@@ -324,7 +328,12 @@ class ScreenWatchService : Service() {
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { overlay.setStatus(e.message ?: "Stockfish failed.") }
+                withContext(Dispatchers.Main) {
+                    // Try this position again on the next read.
+                    if (analyzed == target) analyzed = null
+                    lastEmitted = null
+                    overlay.setStatus(e.message ?: "Stockfish failed.")
+                }
             }
         }
     }
@@ -345,6 +354,13 @@ class ScreenWatchService : Service() {
             return android.graphics.RectF(left.toFloat(), top.toFloat(), (left + g.cw / scale).toFloat(), (top + g.ch / scale).toFloat())
         }
         overlay.setOutline(cell(move.from.file, move.from.rank), cell(move.to.file, move.to.rank), brilliant)
+    }
+
+    /** The bubble's ⇄ button: whose turn it is, when the screen didn't make it clear. */
+    private fun flipTurn() {
+        position = position.copy(sideToMove = position.sideToMove.opposite, enPassant = null)
+        analyzed = null
+        update()
     }
 
     private fun toggleMode() {
