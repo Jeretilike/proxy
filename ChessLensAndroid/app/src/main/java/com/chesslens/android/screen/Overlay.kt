@@ -123,20 +123,23 @@ class Overlay(
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             isClickable = true
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
             background = GradientDrawable().apply { cornerRadius = dp(8f); setColor(Color.rgb(58, 54, 48)) }
             setOnClickListener { onClick() }
             chips += this
         }
         modeButton = chip("Best") { onToggleMode() }
         val turn = chip("⇄ Turn") { onFlipTurn() }
-        bothButton = chip("Both sides") { onToggleBoth() }
+        bothButton = chip("Both") { onToggleBoth() }
         val stop = chip("✕") { onStop() }
         val size = chip("Aa") { nextSize() }
         val pick = chip("▢ Board") { onPickBoard() }
         // Two rows so the bubble stays narrow.
         for ((i, b) in listOf(modeButton, bothButton, turn).withIndex()) {
             if (i > 0) buttons.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
-            buttons.addView(b)
+            buttons.addView(b, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
         root.addView(moveText)
         root.addView(noteText)
@@ -146,14 +149,15 @@ class Overlay(
         val buttons2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         for ((i, b) in listOf(pick, size, stop).withIndex()) {
             if (i > 0) buttons2.addView(View(context), LinearLayout.LayoutParams(dp(5f).toInt(), 1))
-            buttons2.addView(b)
+            buttons2.addView(b, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
         root.addView(View(context), LinearLayout.LayoutParams(1, dp(5f).toInt()))
         root.addView(buttons2)
         applySize()
 
+        // A fixed width: with WRAP_CONTENT, Android could squeeze the bubble into a thin strip.
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, overlayType,
+            bubbleWidth(), WindowManager.LayoutParams.WRAP_CONTENT, overlayType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply {
@@ -190,9 +194,9 @@ class Overlay(
             true
         }
         root.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> recordBounds(v) }
-        wm.addView(root, params)
         bubble = root
         bubbleParams = params
+        wm.addView(root, params)
     }
 
     /** Bubble sizes: small, medium, large (the Aa button). */
@@ -203,16 +207,26 @@ class Overlay(
         bubble?.post { bubble?.let { recordBounds(it) }; keepOffBoard() }
     }
 
+    /** Bubble width in pixels for the current size, never wider than the screen allows. */
+    private fun bubbleWidth(): Int {
+        val screen = wm.maximumWindowMetrics.bounds.width()
+        return minOf(dp(250f * sizes[sizeIndex]).toInt(), screen - dp(24f).toInt())
+    }
+
     private fun applySize() {
         val s = sizes[sizeIndex]
+        bubbleParams?.let { p ->
+            p.width = bubbleWidth()
+            bubble?.let { runCatching { wm.updateViewLayout(it, p) } }
+        }
         moveText.textSize = 26f * s
         noteText.textSize = 12f * s
-        noteText.maxWidth = dp(220f * s).toInt()
+        noteText.maxWidth = Int.MAX_VALUE
         infoText.textSize = 10f * s
-        infoText.maxWidth = dp(260f * s).toInt()
+        infoText.maxWidth = Int.MAX_VALUE
         for (c in chips) {
             c.textSize = 13f * s
-            c.setPadding(dp(11f * s).toInt(), dp(8f * s).toInt(), dp(11f * s).toInt(), dp(8f * s).toInt())
+            c.setPadding(dp(4f * s).toInt(), dp(8f * s).toInt(), dp(4f * s).toInt(), dp(8f * s).toInt())
         }
         bubble?.setPadding(dp(12f * s).toInt(), dp(8f * s).toInt(), dp(12f * s).toInt(), dp(8f * s).toInt())
     }
@@ -241,8 +255,8 @@ class Overlay(
         val screen = wm.maximumWindowMetrics.bounds
         val topLimit = dp(28f) // below the status bar
         val bottomLimit = screen.height() - dp(28f) // above the navigation bar
-        var targetX = loc[0].toFloat().coerceIn(margin, (screen.width() - w - margin).coerceAtLeast(margin))
-        var targetY = loc[1].toFloat()
+        val targetX = loc[0].toFloat().coerceIn(margin, (screen.width() - w - margin).coerceAtLeast(margin))
+        var targetY = loc[1].toFloat().coerceIn(topLimit, (bottomLimit - h).coerceAtLeast(topLimit))
         if (RectF.intersects(current, RectF(board.left - margin, board.top - margin, board.right + margin, board.bottom + margin))) {
             val above = board.top - margin - topLimit
             val below = bottomLimit - (board.bottom + margin)
@@ -278,7 +292,7 @@ class Overlay(
 
     fun setMode(brilliant: Boolean) {
         if (bubble == null) return
-        modeButton.text = if (brilliant) "Brilliant !!" else "Best"
+        modeButton.text = if (brilliant) "!! Brilliant" else "Best"
         modeButton.setTextColor(if (brilliant) teal else Color.WHITE)
     }
 
