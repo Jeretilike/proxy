@@ -90,6 +90,8 @@ class ScreenWatchService : Service() {
     private var pending: String? = null
     private var lastEmitted: String? = null
     private var unreadable = 0
+    /** Android only delivers a new frame when the screen changes; keep the last one to re-read. */
+    private var lastFrame: RgbImage? = null
     // For the bubble's info line.
     @Volatile private var frames = 0
     @Volatile private var boardSeen = "no board yet"
@@ -181,8 +183,10 @@ class ScreenWatchService : Service() {
         val h = handler ?: return
         try {
             val image = reader?.acquireLatestImage()
-            if (image != null) {
-                val frame = image.use { toRgb(it) }
+            // A still screen sends no new frames: read the last one again, so a position that
+            // has settled is confirmed (it must be seen twice) without waiting for the screen to change.
+            val frame = image?.use { toRgb(it) }?.also { lastFrame = it } ?: lastFrame
+            if (frame != null) {
                 frames++
                 read(frame)
             }

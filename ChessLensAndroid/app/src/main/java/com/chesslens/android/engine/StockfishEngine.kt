@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 data class EngineAnalysis(
@@ -104,7 +105,18 @@ class StockfishEngine(private val context: Context) {
                         send("stop")
                         throw EngineException("Stockfish did not answer in time.")
                     }
-                    val line = lines.poll(remaining, TimeUnit.MILLISECONDS) ?: continue
+                    // The position changed and this search is no longer wanted: stop it now
+                    // rather than letting the next search wait for it to finish.
+                    if (!isActive) {
+                        send("stop")
+                        val until = System.currentTimeMillis() + 3000
+                        while (System.currentTimeMillis() < until) {
+                            val l = lines.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                            if (l.startsWith("bestmove")) break
+                        }
+                        throw kotlinx.coroutines.CancellationException("search stopped")
+                    }
+                    val line = lines.poll(minOf(remaining, 100), TimeUnit.MILLISECONDS) ?: continue
                     if (line.startsWith("info ") && " pv " in line && "bound" !in line) {
                         val tokens = line.split(" ")
                         val index = tokens.indexOf("multipv").takeIf { it >= 0 }?.let { tokens[it + 1].toIntOrNull() } ?: 1
