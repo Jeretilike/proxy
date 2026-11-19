@@ -52,6 +52,12 @@ class Overlay(
 
     fun bubbleRect(): Rect? = bubbleBounds
 
+    private fun maxPassThroughAlpha(): Float = try {
+        context.getSystemService(android.hardware.input.InputManager::class.java).maximumObscuringOpacityForTouch.coerceAtMost(0.8f)
+    } catch (_: Throwable) {
+        0.8f
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     fun show() {
         if (bubble != null || !Settings.canDrawOverlays(context)) return
@@ -67,6 +73,9 @@ class Overlay(
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            // Android 12+ blocks taps from reaching the app underneath an overlay window unless the
+            // window is at most this opaque; without it the chess app stops responding to taps.
+            alpha = maxPassThroughAlpha()
         }
         wm.addView(outline, outlineParams)
         outlineView = outline
@@ -103,7 +112,8 @@ class Overlay(
             setTextColor(Color.WHITE)
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(10f).toInt(), dp(5f).toInt(), dp(10f).toInt(), dp(5f).toInt())
+            setPadding(dp(12f).toInt(), dp(9f).toInt(), dp(12f).toInt(), dp(9f).toInt())
+            isClickable = true
             background = GradientDrawable().apply { cornerRadius = dp(8f); setColor(Color.rgb(58, 54, 48)) }
             setOnClickListener { onClick() }
         }
