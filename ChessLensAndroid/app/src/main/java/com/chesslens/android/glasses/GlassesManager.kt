@@ -27,16 +27,29 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
+ * Whether Meta's glasses toolkit started. When it didn't (Meta AI app missing, an unsupported
+ * phone…), the rest of the app keeps working and Screen mode is unaffected.
+ */
+object GlassesSdk {
+    @Volatile var ready = false
+    @Volatile var problem: String? = null
+}
+
+/**
  * Owns the connection to Ray-Ban Meta glasses through the Meta Wearables Device Access Toolkit:
  * registration with the Meta AI app, the device session, and the camera stream.
  */
 class GlassesManager(private val scope: CoroutineScope) {
-    val registrationState: StateFlow<RegistrationState> get() = Wearables.registrationState
+    val registrationState: StateFlow<RegistrationState> =
+        if (GlassesSdk.ready) runCatching { Wearables.registrationState }.getOrElse { MutableStateFlow(RegistrationState.UNAVAILABLE) }
+        else MutableStateFlow(RegistrationState.UNAVAILABLE)
     val sessionState = MutableStateFlow(DeviceSessionState.IDLE)
     val streamState = MutableStateFlow(StreamState.STOPPED)
     val hasActiveDevice = MutableStateFlow(false)
     val preview = MutableStateFlow<Bitmap?>(null)
-    val error = MutableStateFlow<String?>(null)
+    val error = MutableStateFlow<String?>(
+        if (GlassesSdk.ready) null else "Glasses connection isn't available: ${GlassesSdk.problem ?: "Meta's toolkit didn't start"}. Is the Meta AI app installed? Screen mode still works.",
+    )
 
     /** Latest frame (grayscale), for checks triggered from the UI. */
     @Volatile var latestFrame: Frame? = null
@@ -45,25 +58,45 @@ class GlassesManager(private val scope: CoroutineScope) {
     /** Called on a background thread with each decoded frame while streaming. */
     var onFrame: ((Frame) -> Unit)? = null
 
-    private val selector = AutoDeviceSelector()
+    private val selector by lazy { AutoDeviceSelector() }
     private var session: DeviceSession? = null
     private var camera: Camera? = null
     private val jobs = mutableListOf<Job>()
     private var lastPreview = 0L
 
     init {
-        scope.launch { selector.activeDeviceFlow().collect { hasActiveDevice.value = it != null } }
+        if (GlassesSdk.ready) {
+            scope.launch {
+                try {
+                    selector.activeDeviceFlow().collect { hasActiveDevice.value = it != null }
+                } catch (e: Exception) {
+                    error.value = "Couldn't watch for glasses: ${e.message}"
+                }
+            }
+        }
     }
 
     val isRegistered: Boolean get() = registrationState.value == RegistrationState.REGISTERED
     val isStreaming: Boolean get() = streamState.value == StreamState.STREAMING
 
-    fun connect(activity: Activity) = Wearables.startRegistration(activity)
+    fun connect(activity: Activity) {
+        if (!GlassesSdk.ready) return
+        try {
+            Wearables.startRegistration(activity)
+        } catch (e: Exception) {
+            error.value = "Couldn't open Meta AI to connect: ${e.message}"
+        }
+    }
 
     fun disconnect(activity: Activity) {
-        stopStreaming()
-        session?.stop()
-        Wearables.startUnregistration(activity)
+        if (!GlassesSdk.ready) return
+        try {
+            stopStreaming()
+            session?.stop()
+            Wearables.startUnregistration(activity)
+        } catch (e: Exception) {
+            error.value = "Couldn't disconnect: ${e.message}"
+        }
     }
 
     /**
@@ -71,6 +104,17 @@ class GlassesManager(private val scope: CoroutineScope) {
      * app via [requestPermission]), then starts the camera stream.
      */
     suspend fun startStreaming(requestPermission: suspend (Permission) -> PermissionStatus) {
+        if (!GlassesSdk.ready) return
+        try {
+            startStreamingUnsafe(requestPermission)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error.value = "The glasses camera didn't start: ${e.message}"
+        }
+    }
+
+    private suspend fun startStreamingUnsafe(requestPermission: suspend (Permission) -> PermissionStatus) {
         if (camera != null) return
         val current = startedSession() ?: return
         val status = Wearables.checkPermissionStatus(Permission.CAMERA).getOrNull()

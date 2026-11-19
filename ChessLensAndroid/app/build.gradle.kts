@@ -14,7 +14,8 @@ android {
         applicationId = "com.chesslens.android"
         minSdk = 31
         targetSdk = 36
-        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        // 1000 + the CI run number, so CI builds install over hand-made builds (versionCode 1000).
+        versionCode = 1000 + (System.getenv("GITHUB_RUN_NUMBER") ?: "0").toInt()
         versionName = "1.0"
         ndk { abiFilters += "arm64-v8a" }
 

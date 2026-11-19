@@ -10,7 +10,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import com.chesslens.android.CrashReport
 import com.chesslens.android.GameViewModel
+import com.chesslens.android.glasses.GlassesSdk
 import com.meta.wearable.dat.core.Wearables
 import com.meta.wearable.dat.core.types.Permission
 import com.meta.wearable.dat.core.types.PermissionStatus
@@ -54,14 +56,25 @@ class MainActivity : ComponentActivity() {
     private fun start() {
         if (started) return
         started = true
-        Wearables.initialize(this).onFailure { error, _ ->
-            Log.e("ChessLens", "Failed to initialize Meta Wearables SDK: ${error.description}")
+        // The glasses toolkit may fail (no Meta AI app, unsupported phone…); the app must still open.
+        try {
+            Wearables.initialize(this)
+                .onSuccess { GlassesSdk.ready = true }
+                .onFailure { error, _ ->
+                    GlassesSdk.problem = error.description
+                    Log.e("ChessLens", "Failed to initialize Meta Wearables SDK: ${error.description}")
+                }
+        } catch (t: Throwable) {
+            GlassesSdk.problem = t.message ?: t.javaClass.simpleName
+            Log.e("ChessLens", "Meta Wearables SDK crashed while starting", t)
         }
+        val crash = CrashReport.take(this)
         val viewModel: GameViewModel by viewModels()
         setContent {
             ChessLensTheme {
                 MainScreen(
                     game = viewModel,
+                    crashReport = crash,
                     activity = this,
                     requestGlassesPermission = ::requestGlassesPermission,
                     keepScreenOn = { on ->

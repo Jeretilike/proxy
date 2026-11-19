@@ -90,6 +90,7 @@ private val Accent = Color(0xFFFACC33)
 @Composable
 fun MainScreen(
     game: GameViewModel,
+    crashReport: String? = null,
     activity: Activity,
     requestGlassesPermission: suspend (Permission) -> PermissionStatus,
     keepScreenOn: (Boolean) -> Unit,
@@ -100,6 +101,23 @@ fun MainScreen(
     var showSettings by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Square?>(null) }
     var showFen by remember { mutableStateOf(false) }
+    var crash by remember { mutableStateOf(crashReport) }
+    crash?.let { report ->
+        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+        AlertDialog(
+            onDismissRequest = { crash = null },
+            title = { Text("ChessLens closed unexpectedly last time") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Please copy this and send it, so it can be fixed:", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text(report, style = MaterialTheme.typography.bodySmall, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                }
+            },
+            confirmButton = { TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(report)); crash = null }) { Text("Copy") } },
+            dismissButton = { TextButton(onClick = { crash = null }) { Text("Close") } },
+        )
+    }
 
     LaunchedEffect(streamState) { keepScreenOn(streamState == StreamState.STREAMING) }
 
