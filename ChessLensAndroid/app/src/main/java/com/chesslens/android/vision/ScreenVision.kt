@@ -22,7 +22,7 @@ class ScreenSquare(val bg: Int, val mask: BooleanArray, val lum: FloatArray, val
 
 class PieceTemplate(var n: Int, val pm: FloatArray, val lum: FloatArray)
 
-class ScreenReading(val board: ChessBoard, val whiteAtBottom: Boolean, val lastMover: PieceColor?)
+class ScreenReading(val board: ChessBoard, val whiteAtBottom: Boolean, val lastMover: PieceColor?, val uncertain: Int = 0)
 
 /**
  * Reads a chess board from a screenshot of a chess app or site: finds the 8×8 grid of flat,
@@ -395,10 +395,40 @@ object ScreenVision {
         return templates
     }
 
-    /** Identifies every square, or null when one doesn't look like anything known. */
+    /**
+     * Improves the learned pieces from squares that were misread, now that the game follower
+     * knows what is really on them ([board], a1 = 0). Only pieces are learned (not empty squares).
+     */
+    fun refine(squares: List<ScreenSquare>, board: ChessBoard, whiteAtBottom: Boolean, templates: Map<String, PieceTemplate>, screenSquares: List<Int>) {
+        for (i in screenSquares) {
+            val piece = board.at(boardIndex(i, whiteAtBottom)) ?: continue
+            val sq = squares[i]
+            if (sq.coverage <= OCCUPIED) continue
+            val t = templates[keyOf(piece)] ?: continue
+            // A running average that keeps adapting: older samples count at most 20 times.
+            val n = minOf(t.n, 20)
+            for (k in 0 until SIDE * SIDE) {
+                val oldPm = t.pm[k]
+                t.pm[k] = (oldPm * n + (if (sq.mask[k]) 1f else 0f)) / (n + 1)
+                if (sq.mask[k]) {
+                    val weight = oldPm * n
+                    t.lum[k] = (t.lum[k] * weight + sq.lum[k]) / (weight + 1)
+                }
+            }
+            t.n = n + 1
+        }
+    }
+
+    /**
+     * Identifies every square with its best guess, or null when several squares don't look like
+     * anything known (a hand, an arrow, a piece being dragged). A square or two that only roughly
+     * match (a piece set with shading looks a little different on light and dark squares) are
+     * still guessed; the game follower sorts out such misreads using the legal moves.
+     */
     fun recognize(squares: List<ScreenSquare>, templates: Map<String, PieceTemplate>, previousWhiteAtBottom: Boolean): ScreenReading? {
         if (templates.size < 12) return null
         val screen = arrayOfNulls<Piece>(64)
+        var uncertain = 0
         for (i in 0 until 64) {
             val sq = squares[i]
             var bestKey: String? = null
@@ -409,7 +439,8 @@ object ScreenVision {
                     if (d < bestDistance) { bestDistance = d; bestKey = key }
                 }
             }
-            if (bestDistance > MAX_DISTANCE) return null
+            if (bestDistance > MAX_DISTANCE) uncertain++
+            if (bestDistance > MAX_DISTANCE * 2.5) return null
             screen[i] = bestKey?.let { Piece(if (it[0] == 'w') PieceColor.WHITE else PieceColor.BLACK, PieceKind.fromLetter(it[1])!!) }
         }
         var whiteAtBottom = previousWhiteAtBottom
@@ -427,7 +458,8 @@ object ScreenVision {
             val p = screen[i] ?: continue
             board = board.with(Square.fromIndex(boardIndex(i, whiteAtBottom)), p)
         }
-        return ScreenReading(board, whiteAtBottom, lastMover(highlighted(squares), screen))
+        if (uncertain > 3) return null
+        return ScreenReading(board, whiteAtBottom, lastMover(highlighted(squares), screen), uncertain)
     }
 
     // -------------------------------------------------------------------------------------------

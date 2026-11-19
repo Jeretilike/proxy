@@ -193,7 +193,7 @@ class ScreenWatchService : Service() {
         } catch (e: Throwable) {
             main.post { overlay.setStatus("Reading the screen failed: ${e.javaClass.simpleName} ${e.message ?: ""}") }
         }
-        main.post(::showInfo)
+        onMain(::showInfo)
         h.postDelayed(::tick, INTERVAL_MS)
     }
 
@@ -259,52 +259,69 @@ class ScreenWatchService : Service() {
             pending = null
             // The board may have shifted a little (scrolling, a banner): look for it afresh.
             if (++unreadable >= 3) grid = null
-            main.post { overlay.setStatus("A square is unclear (arrow, dragged piece…).") }
+            main.post { overlay.setStatus("A square is unclear (arrow, dragged piece…)."); overlay.clearOutline() }
             return
         }
         unreadable = 0
         whiteAtBottom = reading.whiteAtBottom
         val key = reading.board.placementFen + (reading.lastMover?.fenLetter ?: "-") + reading.whiteAtBottom
         if (pending != key) { pending = key; return }
-        if (key == lastEmitted) return
+        // A reading already handled is only passed on again while it still disagrees with the game,
+        // so the follower can notice the screen persistently showing something else.
+        if (key == lastEmitted && reading.board == followedBoard) return
         lastEmitted = key
         val gridNow = found
-        main.post { follow(reading.board, reading.whiteAtBottom, reading.lastMover, gridNow) }
+        val readSquares = squares
+        val readBoard = reading.board
+        val bottomWhite = reading.whiteAtBottom
+        onMain {
+            follow(readBoard, bottomWhite, reading.lastMover, reading.uncertain, gridNow)
+            // Squares that were misread: learn from them (on the capture thread, which owns the pieces).
+            val truth = position.board
+            val wrong = (0 until 64).filter { readBoard.at(ScreenVision.boardIndex(it, bottomWhite)) != truth.at(ScreenVision.boardIndex(it, bottomWhite)) }
+            if (wrong.isNotEmpty() && wrong.size <= GameFollower.MAX_MISREAD) {
+                handler?.post {
+                    ScreenVision.refine(readSquares, truth, bottomWhite, templates, wrong)
+                    prefs.edit().putString("pieces", ScreenVision.serialize(templates)).apply()
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
     // Main thread: game following and suggestions
 
-    private var screenGrid: ScreenGrid? = null
-
-    private fun follow(seen: ChessBoard, bottomWhite: Boolean, lastMover: PieceColor?, gridNow: ScreenGrid) {
-        screenGrid = gridNow
-        player = if (bottomWhite) PieceColor.WHITE else PieceColor.BLACK
-        position = when {
-            seen == position.board ->
-                if (lastMover != null && position.sideToMove == lastMover) position.copy(sideToMove = lastMover.opposite, enPassant = null) else position
-            else -> movesBetween(position, seen) ?: run {
-                val turn = lastMover?.opposite ?: position.sideToMove
-                val first = ChessPosition.of(seen, turn)
-                if (seen.validationIssues(turn).isEmpty()) first else ChessPosition.of(seen, turn.opposite)
+    /**
+     * Runs [block] on the main thread; an error is shown in the bubble (with where it happened)
+     * instead of closing ChessLens, so it can be reported.
+     */
+    private fun onMain(block: () -> Unit) {
+        main.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                val where = t.stackTrace.firstOrNull { it.className.startsWith("com.chesslens") }
+                    ?.let { " at ${it.fileName}:${it.lineNumber}" } ?: ""
+                overlay.setStatus("Error: ${t.javaClass.simpleName} ${t.message ?: ""}$where")
+                overlay.clearOutline()
+                analyzed = null
             }
         }
-        update()
     }
 
-    private fun movesBetween(from: ChessPosition, seen: ChessBoard): ChessPosition? {
-        for (first in from.legalMoves()) {
-            val middle = from.applying(first)
-            if (middle.board == seen) return middle
-        }
-        for (first in from.legalMoves()) {
-            val middle = from.applying(first)
-            for (second in middle.legalMoves()) {
-                val end = middle.applying(second)
-                if (end.board == seen) return end
-            }
-        }
-        return null
+    private var screenGrid: ScreenGrid? = null
+
+    private val follower = GameFollower()
+    /** The game's current board, for the capture thread. */
+    @Volatile private var followedBoard: ChessBoard? = null
+
+    private fun follow(seen: ChessBoard, bottomWhite: Boolean, lastMover: PieceColor?, uncertain: Int, gridNow: ScreenGrid) {
+        screenGrid = gridNow
+        player = if (bottomWhite) PieceColor.WHITE else PieceColor.BLACK
+        follower.position = position
+        position = follower.follow(seen, lastMover, uncertain)
+        followedBoard = position.board
+        update()
     }
 
     private fun update() {
@@ -323,6 +340,8 @@ class ScreenWatchService : Service() {
         }
         if (position == analyzed) return
         analyzed = position
+        // The old outline belongs to the previous position.
+        overlay.clearOutline()
         val target = position
         val brilliant = brilliantMode
         overlay.setMove(null, false, if (brilliant) "Looking for a brilliant move…" else "Thinking…")
@@ -347,7 +366,7 @@ class ScreenWatchService : Service() {
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 withContext(Dispatchers.Main) {
                     // Try this position again on the next read.
                     if (analyzed == target) analyzed = null
