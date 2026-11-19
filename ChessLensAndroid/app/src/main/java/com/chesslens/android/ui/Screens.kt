@@ -91,6 +91,7 @@ private val Accent = Color(0xFFFACC33)
 fun MainScreen(
     game: GameViewModel,
     crashReport: String? = null,
+    startScreenWatch: () -> Unit = {},
     activity: Activity,
     requestGlassesPermission: suspend (Permission) -> PermissionStatus,
     keepScreenOn: (Boolean) -> Unit,
@@ -157,6 +158,7 @@ fun MainScreen(
                 Text("Set board corners by hand")
             }
         } else {
+            ChessAppCard(startScreenWatch)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { game.undo() }, enabled = game.history.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("Undo") }
                 OutlinedButton(onClick = { game.newGame() }, modifier = Modifier.weight(1f)) { Text("New game") }
@@ -505,5 +507,27 @@ private fun CalibrationScreen(game: GameViewModel) {
             Button(onClick = { game.finishCalibration() }, modifier = Modifier.weight(1f)) { Text("Start") }
         }
         Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** Use ChessLens on top of a chess app: start reading the screen, then switch to the chess app. */
+@Composable
+private fun ChessAppCard(startScreenWatch: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val running by com.chesslens.android.screen.ScreenWatchService.running.collectAsState()
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Use on my chess app", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (running) "Reading your screen. Switch to your chess app: a bubble shows your move and it's outlined on the board."
+                else "ChessLens minimises, reads the board in your chess app (chess.com, lichess…) and shows your best or brilliant move in a floating bubble. The first time, start a new game so it can learn the pieces.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (running) {
+                OutlinedButton(onClick = { com.chesslens.android.screen.ScreenWatchService.stop(context) }, modifier = Modifier.fillMaxWidth()) { Text("Stop reading the screen") }
+            } else {
+                Button(onClick = startScreenWatch, modifier = Modifier.fillMaxWidth()) { Text("Start reading the screen") }
+            }
+        }
     }
 }

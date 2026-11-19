@@ -1,6 +1,14 @@
 package com.chesslens.android.ui
 
 import android.Manifest
+import android.content.Intent
+import android.media.projection.MediaProjectionConfig
+import android.media.projection.MediaProjectionManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.widget.Toast
+import com.chesslens.android.screen.ScreenWatchService
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
@@ -27,6 +35,43 @@ class MainActivity : ComponentActivity() {
 
     private val bluetoothPermission =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { start() }
+
+    // Screen reading: notification permission (for the "running" notice), then Android's
+    // screen-capture consent, then the service starts and ChessLens steps aside.
+    private val screenCapture = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == RESULT_OK && data != null) {
+            ScreenWatchService.start(this, result.resultCode, data)
+            Toast.makeText(this, "ChessLens is watching. Open your chess app.", Toast.LENGTH_LONG).show()
+            moveTaskToBack(true)
+        } else {
+            Toast.makeText(this, "Screen reading needs permission to capture the screen.", Toast.LENGTH_LONG).show()
+        }
+    }
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { askScreenCapture() }
+
+    /** Starts reading the chess board from the screen (asks for what's needed first). */
+    fun startScreenWatch() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Allow ChessLens to display over other apps, then come back and tap Start again.", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        askScreenCapture()
+    }
+
+    private fun askScreenCapture() {
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        // The whole screen (not a single app), so the outlines line up with the board.
+        val intent = if (Build.VERSION.SDK_INT >= 34) manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        else manager.createScreenCaptureIntent()
+        screenCapture.launch(intent)
+    }
 
     private var permissionContinuation: CancellableContinuation<PermissionStatus>? = null
     private val permissionMutex = Mutex()
@@ -75,6 +120,7 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     game = viewModel,
                     crashReport = crash,
+                    startScreenWatch = ::startScreenWatch,
                     activity = this,
                     requestGlassesPermission = ::requestGlassesPermission,
                     keepScreenOn = { on ->

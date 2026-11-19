@@ -84,6 +84,54 @@ class StockfishEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Up to [multipv] best lines for [fen] (best first, scores from the side to move's point of
+     * view). Empty when the game is over.
+     */
+    suspend fun analyzeLines(fen: String, movetimeMillis: Int, multipv: Int): List<com.chesslens.android.chess.EngineLine> = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            ensureStarted()
+            lines.clear()
+            send("setoption name MultiPV value $multipv")
+            send("position fen $fen")
+            send("go movetime $movetimeMillis")
+            val found = java.util.TreeMap<Int, com.chesslens.android.chess.EngineLine>()
+            val deadline = System.currentTimeMillis() + movetimeMillis + 15_000
+            try {
+                while (true) {
+                    val remaining = deadline - System.currentTimeMillis()
+                    if (remaining <= 0) {
+                        send("stop")
+                        throw EngineException("Stockfish did not answer in time.")
+                    }
+                    val line = lines.poll(remaining, TimeUnit.MILLISECONDS) ?: continue
+                    if (line.startsWith("info ") && " pv " in line && "bound" !in line) {
+                        val tokens = line.split(" ")
+                        val index = tokens.indexOf("multipv").takeIf { it >= 0 }?.let { tokens[it + 1].toIntOrNull() } ?: 1
+                        val info = parseInfo(line)
+                        val pv = line.substringAfter(" pv ").trim().split(" ")
+                        found[index] = com.chesslens.android.chess.EngineLine(pv.first(), info["cp"]?.toIntOrNull(), info["mate"]?.toIntOrNull(), pv)
+                    }
+                    if (line.startsWith("bestmove")) {
+                        val best = line.split(" ").getOrNull(1) ?: ""
+                        if (best.isEmpty() || best == "(none)" || best == "0000") return@withContext emptyList()
+                        val result = found.values.toMutableList()
+                        if (result.firstOrNull()?.move != best) {
+                            val known = result.firstOrNull { it.move == best }
+                            result.remove(known)
+                            result.add(0, known ?: com.chesslens.android.chess.EngineLine(best, 0, null, listOf(best)))
+                        }
+                        return@withContext result
+                    }
+                }
+                @Suppress("UNREACHABLE_CODE")
+                emptyList()
+            } finally {
+                send("setoption name MultiPV value 1")
+            }
+        }
+    }
+
     private fun parseInfo(line: String): Map<String, String> {
         val tokens = line.split(" ")
         val result = HashMap<String, String>()
