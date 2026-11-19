@@ -38,6 +38,7 @@ class Overlay(
     private var outlineView: OutlineView? = null
     private lateinit var moveText: TextView
     private lateinit var noteText: TextView
+    private lateinit var infoText: TextView
     private lateinit var modeButton: TextView
     private lateinit var bothButton: TextView
 
@@ -91,6 +92,11 @@ class Overlay(
             textSize = 12f
             maxWidth = dp(220f).toInt()
         }
+        infoText = TextView(context).apply {
+            setTextColor(Color.rgb(130, 124, 114))
+            textSize = 10f
+            maxWidth = dp(260f).toInt()
+        }
         val buttons = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
         fun chip(label: String, onClick: () -> Unit) = TextView(context).apply {
             text = label
@@ -111,6 +117,7 @@ class Overlay(
         }
         root.addView(moveText)
         root.addView(noteText)
+        root.addView(infoText)
         root.addView(View(context), LinearLayout.LayoutParams(1, dp(6f).toInt()))
         root.addView(buttons)
 
@@ -176,6 +183,11 @@ class Overlay(
         if (bubble == null) return
         (bothButton.background as? GradientDrawable)?.setColor(if (on) green else Color.rgb(58, 54, 48))
         bothButton.setTextColor(if (on) Color.rgb(16, 31, 7) else Color.WHITE)
+    }
+
+    fun setInfo(text: String) {
+        if (bubble == null) return
+        infoText.text = text
     }
 
     fun setStatus(text: String) {

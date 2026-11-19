@@ -90,6 +90,9 @@ class ScreenWatchService : Service() {
     private var pending: String? = null
     private var lastEmitted: String? = null
     private var unreadable = 0
+    // For the bubble's info line.
+    @Volatile private var frames = 0
+    @Volatile private var boardSeen = "no board yet"
 
     // Game state (only touched on the main thread).
     private var position: ChessPosition = ChessPosition.START
@@ -180,11 +183,13 @@ class ScreenWatchService : Service() {
             val image = reader?.acquireLatestImage()
             if (image != null) {
                 val frame = image.use { toRgb(it) }
+                frames++
                 read(frame)
             }
-        } catch (e: Exception) {
-            main.post { overlay.setStatus("Reading the screen failed: ${e.message}") }
+        } catch (e: Throwable) {
+            main.post { overlay.setStatus("Reading the screen failed: ${e.javaClass.simpleName} ${e.message ?: ""}") }
         }
+        main.post(::showInfo)
         h.postDelayed(::tick, INTERVAL_MS)
     }
 
@@ -220,6 +225,11 @@ class ScreenWatchService : Service() {
 
     private fun read(img: RgbImage) {
         val found = ScreenVision.findBoard(img, grid)
+        boardSeen = when {
+            found == null -> "no board"
+            templates.size < 12 -> "board ✓, pieces not learned"
+            else -> "board ✓"
+        }
         if (found == null) {
             if (grid != null) main.post { overlay.setStatus("Lost the board. Keep the whole board visible."); overlay.clearOutline() }
             else main.post { overlay.setStatus("Looking for a chess board…") }
@@ -241,6 +251,7 @@ class ScreenWatchService : Service() {
         }
         val reading = ScreenVision.recognize(squares, templates, whiteAtBottom)
         if (reading == null) {
+            boardSeen = "board ✓, square unclear"
             pending = null
             // The board may have shifted a little (scrolling, a banner): look for it afresh.
             if (++unreadable >= 3) grid = null
@@ -359,6 +370,13 @@ class ScreenWatchService : Service() {
             return android.graphics.RectF(left.toFloat(), top.toFloat(), (left + g.cw / scale).toFloat(), (top + g.ch / scale).toFloat())
         }
         overlay.setOutline(cell(move.from.file, move.from.rank), cell(move.to.file, move.to.rank), brilliant)
+    }
+
+    /** One line of what ChessLens currently sees and thinks, to make problems easy to report. */
+    private fun showInfo() {
+        val side = { c: PieceColor -> if (c == PieceColor.WHITE) "White" else "Black" }
+        val you = if (bothSides) "both sides" else side(player)
+        overlay.setInfo("$boardSeen · you: $you · to move: ${side(position.sideToMove)} · read #$frames")
     }
 
     /** The bubble's ⇄ button: whose turn it is, when the screen didn't make it clear. */
