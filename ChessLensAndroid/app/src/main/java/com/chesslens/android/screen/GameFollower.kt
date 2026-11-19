@@ -29,6 +29,11 @@ class GameFollower(var position: ChessPosition = ChessPosition.START) {
     fun follow(seen: ChessBoard, lastMover: PieceColor?, uncertain: Int): ChessPosition {
         repeats = if (seen == lastSeen) repeats + 1 else 1
         lastSeen = seen
+        // The starting position on screen means a new game, whatever happened before.
+        if (seen == ChessPosition.START.board) {
+            if (position.board != seen) position = ChessPosition.START
+            return position
+        }
         var match = closest(position, seen)
         // The same clear, possible board seen again and again that still doesn't fit: the game here
         // went wrong somewhere, so take the screen's word for it.
@@ -41,7 +46,7 @@ class GameFollower(var position: ChessPosition = ChessPosition.START) {
                 if (lastMover != null && position.sideToMove == lastMover && differences(position.board, seen) == 0)
                     position.copy(sideToMove = lastMover.opposite, enPassant = null) else position
             match != null -> match
-            uncertain == 0 && isPlausible(seen) -> {
+            (uncertain == 0 || repeats >= TRUST_SCREEN_AFTER) && isPlausible(seen) -> {
                 // Nothing close: a new game or a jump (e.g. moves made while ChessLens wasn't looking).
                 val turn = lastMover?.opposite ?: position.sideToMove
                 if (seen.validationIssues(turn).isEmpty()) ChessPosition.of(seen, turn) else ChessPosition.of(seen, turn.opposite)

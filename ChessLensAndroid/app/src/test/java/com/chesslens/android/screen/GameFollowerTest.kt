@@ -74,4 +74,37 @@ class GameFollowerTest {
         follower.follow(twoKings, null, 0)
         assertEquals(ChessPosition.START.board, follower.position.board)
     }
+
+    @Test fun newGameAfterAnOldOne() {
+        // Follow a game as far as move 20 with Black to move, then a new game appears.
+        val rnd = Random(5)
+        var truth = ChessPosition.START
+        val follower = GameFollower()
+        repeat(21) {
+            truth = truth.applying(truth.legalMoves().random(rnd))
+            follower.follow(truth.board, truth.sideToMove.opposite, 0)
+        }
+        assertEquals(PieceColor.BLACK, follower.position.sideToMove)
+        // New game: the start position, even with a doubtful square, means White to move.
+        follower.follow(ChessPosition.START.board, null, 1)
+        assertEquals(ChessPosition.START.board, follower.position.board)
+        assertEquals(PieceColor.WHITE, follower.position.sideToMove)
+        // And the new game is followed: 1.e4 e5.
+        var game = ChessPosition.START
+        for (uci in listOf("e2e4", "e7e5", "g1f3")) {
+            game = game.applying(com.chesslens.android.chess.UciMove.parse(uci)!!)
+            follower.follow(game.board, game.sideToMove.opposite, 0)
+            assertEquals(game.board, follower.position.board)
+            assertEquals(game.sideToMove, follower.position.sideToMove)
+        }
+    }
+
+    @Test fun switchesToAnotherGameShownOnScreen() {
+        // A different game in progress (e.g. opened from the game list) with a doubtful square.
+        val other = ChessPosition.fromFen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")!!
+        val follower = GameFollower()
+        repeat(GameFollower.TRUST_SCREEN_AFTER) { follower.follow(other.board, PieceColor.BLACK, 1) }
+        assertEquals(other.board, follower.position.board)
+        assertEquals(PieceColor.WHITE, follower.position.sideToMove)
+    }
 }
