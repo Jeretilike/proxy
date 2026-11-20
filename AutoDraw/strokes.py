@@ -66,7 +66,7 @@ def make_strokes(bw, spacing=1):
 # Tracing lines (for outlines / line art): follow each line like a pen instead of scanning rows
 
 
-def make_paths(bw, tolerance=0.8, join_gap=2, min_length=0):
+def make_paths(bw, tolerance=0.5, join_gap=0, min_length=0):
     """Polylines that follow the black lines of `bw` (8-connected), each drawn without lifting.
 
     Returns a list of paths, each a list of (x, y) points; consecutive points are joined by
@@ -191,7 +191,7 @@ def order_and_join(paths, join_gap):
         nxt = remaining[idx][::-1] if flip else remaining[idx]
         take(idx)
         count += 1
-        if d is not None and d <= join_gap:
+        if join_gap > 0 and d is not None and d <= join_gap:
             current = current + nxt  # keep drawing: the gap is tiny
         else:
             out.append(current)
@@ -350,5 +350,5 @@ def lines_and_fill_paths(bw, spacing=2, min_length=0):
     paths = make_paths(thin(lines), min_length=min_length)
     paths += make_paths(outline_of(solid), min_length=min_length)
     rows = [r for r in make_strokes(solid, spacing) if r[2] - r[1] + 1 >= max(1, min_length)]
-    paths += order_and_join(strokes_to_paths(rows), spacing)
+    paths += order_and_join(strokes_to_paths(rows), 0)  # every piece its own stroke
     return paths

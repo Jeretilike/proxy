@@ -297,7 +297,7 @@ class AutoDraw:
         else:
             # Rows, drawn nearest-first and joined row to row where they touch.
             rows = [r for r in make_strokes(bw, st["spacing"]) if r[2] - r[1] + 1 >= st["min_piece"]]
-            paths = order_and_join(strokes_to_paths(rows), st["spacing"])
+            paths = order_and_join(strokes_to_paths(rows), 0)  # every piece its own stroke
         drawn = rasterize(paths, bw.size)
         self.root.after(0, lambda: self._apply(generation, bw, paths, drawn))
 
