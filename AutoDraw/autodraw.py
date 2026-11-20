@@ -15,7 +15,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageGrab, ImageTk
 
-from strokes import make_strokes, to_black_and_white
+from strokes import make_paths, make_strokes, order_and_join, rasterize, strokes_to_paths, to_black_and_white
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -122,7 +122,7 @@ class AutoDraw:
 
         self.source = None  # original image
         self.bw = None  # black-and-white image (mode "1", black = draw)
-        self.strokes = []
+        self.paths = []  # each a list of (x, y) points drawn without lifting the pen
         self.mouse = Mouse()
         self.stop_flag = threading.Event()
         self.drawing = False
@@ -266,9 +266,16 @@ class AutoDraw:
         if self.source is None:
             return
         self.bw = to_black_and_white(self.source, self.size.get(), self.threshold.get(), self.invert.get(), self.mode.get() == "Outline")
-        self.strokes = make_strokes(self.bw, self.detail.get())
+        if self.mode.get() == "Outline":
+            # Line art: follow each line like a pen (far fewer pen lifts than scanning rows).
+            self.paths = make_paths(self.bw)
+        else:
+            # Rows, drawn nearest-first and joined row to row where they touch (fewer pen lifts).
+            spacing = self.detail.get()
+            self.paths = order_and_join(strokes_to_paths(make_strokes(self.bw, spacing)), spacing)
+        self.drawn = rasterize(self.paths, self.bw.size)
         w, h = self.bw.size
-        self.set_status(f"{w}×{h} px, {len(self.strokes)} strokes. Press F2 to preview, then click where to draw.")
+        self.set_status(f"{w}×{h} px, {len(self.paths)} strokes. Press F2 to preview, then click where to draw.")
         self.show_preview()
 
     def show_preview(self):
@@ -279,11 +286,7 @@ class AutoDraw:
             c.create_text(cw / 2, ch / 2, text=self.drop_hint, fill="#888", font=("Segoe UI", 13), justify="center")
             return
         # Show the strokes as they will be drawn.
-        img = Image.new("L", self.bw.size, 255)
-        px = img.load()
-        for (y, x0, x1) in self.strokes:
-            for x in range(x0, x1 + 1):
-                px[x, y] = 0
+        img = self.drawn
         scale = min(cw / img.width, ch / img.height, 3)
         shown = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.NEAREST)
         self.tk_preview = ImageTk.PhotoImage(shown)
@@ -299,11 +302,9 @@ class AutoDraw:
         self.previewing = True
         w, h = self.bw.size
         # Red copy of the drawing on a see-through background.
+        red = Image.new("RGB", (w, h), (230, 30, 30))
         rgba = Image.new("RGB", (w, h), (255, 0, 255))
-        px = rgba.load()
-        for (y, x0, x1) in self.strokes:
-            for x in range(x0, x1 + 1):
-                px[x, y] = (230, 30, 30)
+        rgba.paste(red, (0, 0), self.drawn.point(lambda v: 255 if v == 0 else 0))
         top = tk.Toplevel(self.root)
         top.overrideredirect(True)
         top.attributes("-topmost", True)
@@ -349,7 +350,7 @@ class AutoDraw:
 
     def start_drawing(self, x, y):
         self.end_preview()
-        if self.drawing or not self.strokes:
+        if self.drawing or not self.paths:
             return
         self.drawing = True
         self.stop_flag.clear()
@@ -357,40 +358,46 @@ class AutoDraw:
         threading.Thread(target=self.draw, args=(int(x), int(y)), daemon=True).start()
 
     def draw(self, ox, oy):
-        # Speed 1..10 -> pause after each stroke and how finely long strokes are split.
-        pause = [0.03, 0.02, 0.012, 0.008, 0.005, 0.003, 0.002, 0.001, 0.0005, 0.0][self.speed.get() - 1]
-        settle = 0.004 if self.speed.get() < 8 else 0.001
-        step_px = 40
+        # Programs read the mouse a limited number of times a second (games about 60). The pen
+        # must stay up long enough to be noticed before moving to the next stroke, or the
+        # program joins the strokes with long stray lines.
+        speed = self.speed.get()
         game = self.game_mode.get()
+        lift = [0.05, 0.04, 0.03, 0.025, 0.022, 0.02, 0.018, 0.016, 0.014, 0.012][speed - 1]
+        settle = [0.012, 0.009, 0.007, 0.005, 0.004, 0.003, 0.002, 0.0015, 0.001, 0.0008][speed - 1]
+        step_px = 12
         if game:
-            # Games read the mouse once per frame (about 60 times a second): move in small steps
-            # and give each step a frame, and hold the button a moment before moving.
+            lift = max(lift, 0.04)
             settle = max(settle, 0.017)
             step_px = 6
-            pause = max(pause, 0.03)
-        total = len(self.strokes)
+        total = len(self.paths)
         time.sleep(0.25)  # let the starting click finish
         done = 0
         try:
-            for i, (y, x0, x1) in enumerate(self.strokes):
+            for i, path in enumerate(self.paths):
                 if self.stop_flag.is_set():
                     break
-                self.mouse.move(ox + x0, oy + y)
-                time.sleep(settle)
+                x, y = path[0]
+                self.mouse.move(ox + x, oy + y)
+                time.sleep(lift)  # arrive with the pen up
                 self.mouse.down()
-                time.sleep(settle * (2 if game else 1))
-                # Long strokes in steps, so programs that sample the mouse don't miss them.
-                steps = max(1, (x1 - x0) // step_px)
-                for s in range(1, steps + 1):
-                    self.mouse.move(ox + x0 + (x1 - x0) * s // steps, oy + y)
+                time.sleep(lift if game else settle * 2)
+                if len(path) == 1:
+                    self.mouse.move(ox + x + 1, oy + y)  # a dot: nudge so it registers
                     time.sleep(settle)
-                if game:
-                    time.sleep(settle)  # let the game see the end of the stroke before letting go
+                for (x1, y1), (x2, y2) in zip(path, path[1:]):
+                    if self.stop_flag.is_set():
+                        break
+                    # Long segments in steps, so programs that sample the mouse follow them.
+                    n = max(1, int(max(abs(x2 - x1), abs(y2 - y1)) // step_px))
+                    for s in range(1, n + 1):
+                        self.mouse.move(ox + x1 + (x2 - x1) * s / n, oy + y1 + (y2 - y1) * s / n)
+                        time.sleep(settle)
+                time.sleep(settle * 2)  # let the end of the stroke register before lifting
                 self.mouse.up()
-                if pause:
-                    time.sleep(pause)
+                time.sleep(lift)  # pen up long enough to be noticed
                 done = i + 1
-                if i % 50 == 0:
+                if i % 20 == 0:
                     self.set_status(f"Drawing… {done}/{total} strokes. Press Alt to stop.")
         finally:
             self.mouse.up()

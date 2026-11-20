@@ -39,3 +39,23 @@ def test_size_and_transparency():
     bw = to_black_and_white(img, 100, 128)
     assert bw.size == (100, 50)
     assert bw.getpixel((2, 2)) == 255 and bw.getpixel((50, 25)) == 0
+
+
+from strokes import make_paths, rasterize
+
+
+def test_traced_paths_cover_the_outline_with_few_pen_lifts():
+    img = Image.new("RGB", (200, 120), "white")
+    d = ImageDraw.Draw(img)
+    d.ellipse([20, 20, 120, 100], outline="black", width=1)
+    d.line([140, 20, 190, 100], fill="black", width=1)
+    bw = to_black_and_white(img, 200, 128)
+    paths = make_paths(bw)
+    black = {(x, y) for y in range(bw.height) for x in range(bw.width) if bw.getpixel((x, y)) == 0}
+    drawn = rasterize(paths, bw.size)
+    covered = {(x, y) for y in range(bw.height) for x in range(bw.width) if drawn.getpixel((x, y)) == 0}
+    # Every black pixel is drawn or right next to a drawn one (simplification may shift by 1 px).
+    near = lambda p: any((p[0] + dx, p[1] + dy) in covered for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+    assert all(near(p) for p in black)
+    # A circle and a line: a handful of strokes, not one per row (row scanning needs ~160).
+    assert len(paths) <= 8, len(paths)

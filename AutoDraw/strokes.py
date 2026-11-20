@@ -54,3 +54,187 @@ def make_strokes(bw, spacing=1):
             else:
                 x += 1
     return strokes
+
+
+# ---------------------------------------------------------------------------------------------
+# Tracing lines (for outlines / line art): follow each line like a pen instead of scanning rows
+
+
+def make_paths(bw, tolerance=0.8, join_gap=2):
+    """Polylines that follow the black lines of `bw` (8-connected), each drawn without lifting.
+
+    Returns a list of paths, each a list of (x, y) points; consecutive points are joined by
+    straight segments (simplified so a segment strays at most `tolerance` px from the pixels).
+    """
+    w, h = bw.size
+    px = bw.load()
+    black = bytearray(w * h)
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] == 0:
+                black[y * w + x] = 1
+    visited = bytearray(w * h)
+    # Prefer straight-ahead neighbours first so lines are followed smoothly.
+    dirs = [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (-1, -1), (1, -1)]
+
+    def neighbours(x, y):
+        for dx, dy in dirs:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny < h:
+                i = ny * w + nx
+                if black[i] and not visited[i]:
+                    yield nx, ny
+
+    def degree(x, y):
+        return sum(1 for _ in neighbours(x, y))
+
+    paths = []
+    # Start from line ends (one black neighbour) first, so each line is drawn end to end
+    # instead of from somewhere in its middle; then whatever is left (closed loops).
+    def black_neighbours(x, y):
+        n = 0
+        for dx, dy in dirs:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < w and 0 <= ny < h and black[ny * w + nx]:
+                n += 1
+        return n
+
+    ends = [(x, y) for y in range(h) for x in range(w) if black[y * w + x] and black_neighbours(x, y) <= 1]
+    others = [(x, y) for y in range(h) for x in range(w) if black[y * w + x]]
+    for sx, sy in ends + others:
+        i = sy * w + sx
+        if visited[i]:
+            continue
+        if True:
+            # Start from a line end if this pixel's line has one nearby, so we draw end to end.
+            x, y = sx, sy
+            visited[i] = 1
+            path = [(x, y)]
+            last_dir = None
+            while True:
+                options = list(neighbours(x, y))
+                if not options:
+                    break
+                if last_dir is not None:
+                    # Keep going the same way when possible; otherwise the gentlest turn.
+                    options.sort(key=lambda p: abs(p[0] - x - last_dir[0]) + abs(p[1] - y - last_dir[1]))
+                else:
+                    # First step: towards the neighbour with the fewest onward options (a line end).
+                    options.sort(key=lambda p: degree(*p))
+                nx, ny = options[0]
+                last_dir = (nx - x, ny - y)
+                x, y = nx, ny
+                visited[y * w + x] = 1
+                path.append((x, y))
+            paths.append(path)
+    paths = order_and_join(paths, join_gap)
+    return [simplify(p, tolerance) for p in paths]
+
+
+def order_and_join(paths, join_gap):
+    """Draws paths nearest-first (less travel) and joins a path onto the previous one when it
+    starts within `join_gap` px of where the previous one ended, so the pen needn't lift."""
+    if not paths:
+        return paths
+    remaining = paths[:]
+    # Bucket start and end points on a grid for quick nearest lookups.
+    cell = 16
+    grid = {}
+    for idx, p in enumerate(remaining):
+        for end in (p[0], p[-1]):
+            grid.setdefault((end[0] // cell, end[1] // cell), set()).add(idx)
+    used = [False] * len(remaining)
+
+    def take(idx):
+        used[idx] = True
+        for end in (remaining[idx][0], remaining[idx][-1]):
+            grid.get((end[0] // cell, end[1] // cell), set()).discard(idx)
+
+    def nearest(x, y):
+        best, best_d, flip = None, None, False
+        r = 0
+        while r < 64:
+            for gx in range(x // cell - r, x // cell + r + 1):
+                for gy in range(y // cell - r, y // cell + r + 1):
+                    if max(abs(gx - x // cell), abs(gy - y // cell)) != r:
+                        continue
+                    for idx in grid.get((gx, gy), ()):
+                        p = remaining[idx]
+                        for end, rev in ((p[0], False), (p[-1], True)):
+                            d = max(abs(end[0] - x), abs(end[1] - y))
+                            if best_d is None or d < best_d:
+                                best, best_d, flip = idx, d, rev
+            if best is not None and best_d <= r * cell:
+                break
+            r += 1
+        return best, best_d, flip
+
+    out = []
+    current = remaining[0]
+    take(0)
+    count = 1
+    while count < len(remaining):
+        x, y = current[-1]
+        idx, d, flip = nearest(x, y)
+        if idx is None:
+            idx = used.index(False)
+            d, flip = None, False
+        nxt = remaining[idx][::-1] if flip else remaining[idx]
+        take(idx)
+        count += 1
+        if d is not None and d <= join_gap:
+            current = current + nxt  # keep drawing: the gap is tiny
+        else:
+            out.append(current)
+            current = nxt
+    out.append(current)
+    return out
+
+
+def simplify(points, tolerance):
+    """Ramer–Douglas–Peucker: drop points that lie within `tolerance` px of the line between neighbours."""
+    if len(points) < 3:
+        return points
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        a, b = stack.pop()
+        (x1, y1), (x2, y2) = points[a], points[b]
+        dx, dy = x2 - x1, y2 - y1
+        length = (dx * dx + dy * dy) ** 0.5 or 1.0
+        far, far_d = None, tolerance
+        for k in range(a + 1, b):
+            px_, py_ = points[k]
+            d = abs(dy * (px_ - x1) - dx * (py_ - y1)) / length
+            if d > far_d:
+                far, far_d = k, d
+        if far is not None:
+            keep[far] = True
+            stack.append((a, far))
+            stack.append((far, b))
+    return [p for p, k in zip(points, keep) if k]
+
+
+def strokes_to_paths(strokes):
+    """Row strokes (y, x0, x1) as two-point paths."""
+    return [[(x0, y), (x1, y)] for (y, x0, x1) in strokes]
+
+
+def rasterize(paths, size):
+    """Which pixels the pen covers when drawing `paths` (for the preview)."""
+    w, h = size
+    img = Image.new("L", size, 255)
+    px = img.load()
+    for path in paths:
+        if len(path) == 1:
+            x, y = path[0]
+            px[x, y] = 0
+        for (x1, y1), (x2, y2) in zip(path, path[1:]):
+            n = max(abs(x2 - x1), abs(y2 - y1), 1)
+            for s in range(n + 1):
+                x = round(x1 + (x2 - x1) * s / n)
+                y = round(y1 + (y2 - y1) * s / n)
+                if 0 <= x < w and 0 <= y < h:
+                    px[x, y] = 0
+    return img
