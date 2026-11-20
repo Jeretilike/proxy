@@ -4,7 +4,9 @@ Draws a picture for you by moving the mouse (Windows).
 
 1. Drop an image on the window (or **Open image** / **Ctrl+V**). Adjust size, darkness cut-off,
    speed and the mode; the preview shows the strokes it will draw.
-   - **Lines** (best for drawings and line art): every black line is thinned to its centre and
+   - **Lines + fill** (default, best for most drawings): thin lines traced once, solid black
+     areas (hair, pupils) filled with a clean edge.
+   - **Lines** (pure line art): every black line is thinned to its centre and
      traced once, like tracing paper.
    - **Outline**: the edges of dark areas.
    - **Fill**: dark areas filled with rows.

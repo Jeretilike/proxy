@@ -307,3 +307,48 @@ def thin(bw):
             y, x = divmod(i, W)
             o[x - 1, y - 1] = 0
     return out
+
+
+# ---------------------------------------------------------------------------------------------
+# Lines + fill: thin lines traced once, solid black areas (pupils, dark hair) filled in
+
+
+def split_thick(bw, radius=2):
+    """Splits black into solid areas (at least 2*radius+1 px across) and thin lines.
+
+    Returns (lines, solid) as black-on-white images.
+    """
+    size = 2 * radius + 1
+    core = bw.filter(ImageFilter.MaxFilter(size))  # only the middles of wide black areas stay black
+    solid = core.filter(ImageFilter.MinFilter(size))  # grown back to their full shape
+    # Lines: black that isn't part of a solid area.
+    b, s = bw.load(), solid.load()
+    lines = Image.new("L", bw.size, 255)
+    l = lines.load()
+    for y in range(bw.height):
+        for x in range(bw.width):
+            if b[x, y] == 0 and s[x, y] != 0:
+                l[x, y] = 0
+    return lines, solid
+
+
+def outline_of(bw):
+    """The edge pixels of the black areas."""
+    eroded = bw.filter(ImageFilter.MaxFilter(3))
+    edges = Image.new("L", bw.size, 255)
+    b, e, out = bw.load(), eroded.load(), edges.load()
+    for y in range(bw.height):
+        for x in range(bw.width):
+            if b[x, y] == 0 and e[x, y] == 255:
+                out[x, y] = 0
+    return edges
+
+
+def lines_and_fill_paths(bw, spacing=2, min_length=0):
+    """Thin lines traced once; solid areas filled with rows and edged with their outline."""
+    lines, solid = split_thick(bw)
+    paths = make_paths(thin(lines), min_length=min_length)
+    paths += make_paths(outline_of(solid), min_length=min_length)
+    rows = [r for r in make_strokes(solid, spacing) if r[2] - r[1] + 1 >= max(1, min_length)]
+    paths += order_and_join(strokes_to_paths(rows), spacing)
+    return paths

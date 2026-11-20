@@ -15,7 +15,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageGrab, ImageTk
 
-from strokes import make_paths, make_strokes, order_and_join, rasterize, strokes_to_paths, to_black_and_white
+from strokes import lines_and_fill_paths, make_paths, make_strokes, order_and_join, rasterize, strokes_to_paths, to_black_and_white
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -133,7 +133,7 @@ class AutoDraw:
         self.threshold = tk.IntVar(value=128)
         self.detail = tk.IntVar(value=2)
         self.speed = tk.IntVar(value=3)
-        self.mode = tk.StringVar(value="Lines")
+        self.mode = tk.StringVar(value="Lines + fill")
         self.invert = tk.BooleanVar(value=False)
         self.game_mode = tk.BooleanVar(value=False)
         self.min_piece = tk.IntVar(value=4)
@@ -209,11 +209,11 @@ class AutoDraw:
         slider("Skip specks smaller than", self.min_piece, 0, 30, " px")
         slider("Pause between strokes (more if lines get joined)", self.lift_ms, 10, 200, " ms")
 
+        ttk.Label(right, text="Draw").pack(anchor="w", pady=(6, 0))
         modes = ttk.Frame(right)
-        modes.pack(fill="x", pady=(6, 2))
-        ttk.Label(modes, text="Draw").pack(side="left")
-        for m in ("Lines", "Outline", "Fill"):
-            ttk.Radiobutton(modes, text=m, value=m, variable=self.mode, command=self.rebuild).pack(side="left", padx=6)
+        modes.pack(fill="x", pady=(0, 2))
+        for i, m in enumerate(("Lines + fill", "Lines", "Outline", "Fill")):
+            ttk.Radiobutton(modes, text=m, value=m, variable=self.mode, command=self.rebuild).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 14))
         ttk.Checkbutton(right, text="Swap black and white", variable=self.invert, command=self.rebuild).pack(anchor="w", pady=2)
         ttk.Checkbutton(right, text="Game mode (Roblox and other games: slower, smoother)", variable=self.game_mode).pack(anchor="w", pady=2)
 
@@ -288,7 +288,10 @@ class AutoDraw:
         mode = st["mode"]
         bw = to_black_and_white(st["source"], st["size"], st["threshold"], st["invert"],
                                 outline=mode == "Outline", lines=mode == "Lines")
-        if mode in ("Lines", "Outline"):
+        if mode == "Lines + fill":
+            # Thin lines traced once; solid black areas (hair, pupils) filled with a clean edge.
+            paths = lines_and_fill_paths(bw, st["spacing"], st["min_piece"])
+        elif mode in ("Lines", "Outline"):
             # Follow each line like a pen (far fewer pen lifts than scanning rows).
             paths = make_paths(bw, min_length=st["min_piece"])
         else:

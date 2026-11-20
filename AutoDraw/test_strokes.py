@@ -70,3 +70,25 @@ def test_lines_mode_draws_each_thick_line_once():
     outline = to_black_and_white(img, 200, 128, outline=True)
     assert len([y for y in range(100) if outline.getpixel((100, y)) == 0]) == 2  # outline: two edges
     assert len(make_paths(thinned)) == 1
+
+
+from strokes import lines_and_fill_paths
+
+
+def test_lines_and_fill_keeps_pupils_solid():
+    img = Image.new("RGB", (200, 100), "white")
+    d = ImageDraw.Draw(img)
+    d.ellipse([30, 30, 60, 60], outline="black", width=2)  # an eye outline
+    d.ellipse([40, 40, 50, 50], fill="black")  # its pupil (solid)
+    d.line([100, 50, 180, 50], fill="black", width=3)  # a line
+    bw = to_black_and_white(img, 200, 128)
+    drawn = rasterize(lines_and_fill_paths(bw, spacing=1), bw.size)
+    # The pupil is filled, not reduced to a dot.
+    pupil = [(x, y) for y in range(41, 50) for x in range(41, 50)]
+    assert sum(1 for p in pupil if drawn.getpixel(p) == 0) >= len(pupil) * 0.8
+    # Lines-only mode loses most of it.
+    thin_only = rasterize(make_paths(to_black_and_white(img, 200, 128, lines=True)), bw.size)
+    assert sum(1 for p in pupil if thin_only.getpixel(p) == 0) < len(pupil) * 0.3
+    # The eye outline and the line are drawn.
+    assert drawn.getpixel((30, 45)) == 0 or drawn.getpixel((31, 45)) == 0
+    assert drawn.getpixel((140, 50)) == 0
