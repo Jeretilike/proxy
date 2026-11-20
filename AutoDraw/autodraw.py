@@ -44,28 +44,63 @@ if IS_WINDOWS:
 
 
 class Mouse:
-    """Moves and clicks the real mouse (SendInput on Windows; pynput elsewhere)."""
+    """Moves and clicks the real mouse.
 
-    LEFTDOWN, LEFTUP = 0x0002, 0x0004
+    On Windows it uses SendInput, the same path a real mouse takes, so games (Roblox and the
+    like) see the pointer move while the button is held, not just clicks.
+    """
+
+    MOVE, LEFTDOWN, LEFTUP, ABSOLUTE, VIRTUALDESK = 0x0001, 0x0002, 0x0004, 0x8000, 0x4000
 
     def __init__(self):
         self.fallback = mouse.Controller()
+        if IS_WINDOWS:
+            from ctypes import wintypes
+
+            class MOUSEINPUT(ctypes.Structure):
+                _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                            ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+            class KEYBDINPUT(ctypes.Structure):
+                _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                            ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+            class _U(ctypes.Union):
+                _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
+
+            class INPUT(ctypes.Structure):
+                _anonymous_ = ("u",)
+                _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+            self.INPUT, self.MOUSEINPUT = INPUT, MOUSEINPUT
+            self.user32 = ctypes.windll.user32
+            self.user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+
+    def _send(self, flags, dx=0, dy=0):
+        inp = self.INPUT(type=0)
+        inp.mi = self.MOUSEINPUT(dx, dy, 0, flags, 0, 0)
+        self.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
 
     def move(self, x, y):
         if IS_WINDOWS:
-            ctypes.windll.user32.SetCursorPos(int(x), int(y))
+            # Absolute position over the whole desktop (all monitors), 0..65535.
+            vx, vy = self.user32.GetSystemMetrics(76), self.user32.GetSystemMetrics(77)
+            vw, vh = self.user32.GetSystemMetrics(78), self.user32.GetSystemMetrics(79)
+            nx = int(round((x - vx) * 65535 / max(1, vw - 1)))
+            ny = int(round((y - vy) * 65535 / max(1, vh - 1)))
+            self._send(self.MOVE | self.ABSOLUTE | self.VIRTUALDESK, nx, ny)
         else:
             self.fallback.position = (int(x), int(y))
 
     def down(self):
         if IS_WINDOWS:
-            ctypes.windll.user32.mouse_event(self.LEFTDOWN, 0, 0, 0, 0)
+            self._send(self.LEFTDOWN)
         else:
             self.fallback.press(mouse.Button.left)
 
     def up(self):
         if IS_WINDOWS:
-            ctypes.windll.user32.mouse_event(self.LEFTUP, 0, 0, 0, 0)
+            self._send(self.LEFTUP)
         else:
             self.fallback.release(mouse.Button.left)
 
@@ -100,6 +135,7 @@ class AutoDraw:
         self.speed = tk.IntVar(value=3)
         self.mode = tk.StringVar(value="Fill")
         self.invert = tk.BooleanVar(value=False)
+        self.game_mode = tk.BooleanVar(value=False)
 
         self.build_ui()
         self.listen()
@@ -175,6 +211,7 @@ class AutoDraw:
         for m in ("Fill", "Outline"):
             ttk.Radiobutton(modes, text=m, value=m, variable=self.mode, command=self.rebuild).pack(side="left", padx=6)
         ttk.Checkbutton(right, text="Swap black and white", variable=self.invert, command=self.rebuild).pack(anchor="w", pady=2)
+        ttk.Checkbutton(right, text="Game mode (Roblox and other games: slower, smoother)", variable=self.game_mode).pack(anchor="w", pady=2)
 
         keys = ttk.Frame(right)
         keys.pack(fill="x", pady=(14, 4))
@@ -323,6 +360,14 @@ class AutoDraw:
         # Speed 1..10 -> pause after each stroke and how finely long strokes are split.
         pause = [0.03, 0.02, 0.012, 0.008, 0.005, 0.003, 0.002, 0.001, 0.0005, 0.0][self.speed.get() - 1]
         settle = 0.004 if self.speed.get() < 8 else 0.001
+        step_px = 40
+        game = self.game_mode.get()
+        if game:
+            # Games read the mouse once per frame (about 60 times a second): move in small steps
+            # and give each step a frame, and hold the button a moment before moving.
+            settle = max(settle, 0.017)
+            step_px = 6
+            pause = max(pause, 0.03)
         total = len(self.strokes)
         time.sleep(0.25)  # let the starting click finish
         done = 0
@@ -333,12 +378,14 @@ class AutoDraw:
                 self.mouse.move(ox + x0, oy + y)
                 time.sleep(settle)
                 self.mouse.down()
-                time.sleep(settle)
-                # Long strokes in a few steps, so programs that sample the mouse don't miss them.
-                steps = max(1, (x1 - x0) // 40)
+                time.sleep(settle * (2 if game else 1))
+                # Long strokes in steps, so programs that sample the mouse don't miss them.
+                steps = max(1, (x1 - x0) // step_px)
                 for s in range(1, steps + 1):
                     self.mouse.move(ox + x0 + (x1 - x0) * s // steps, oy + y)
                     time.sleep(settle)
+                if game:
+                    time.sleep(settle)  # let the game see the end of the stroke before letting go
                 self.mouse.up()
                 if pause:
                     time.sleep(pause)
