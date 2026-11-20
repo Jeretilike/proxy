@@ -401,13 +401,24 @@ class AutoDraw:
         total = len(self.paths)
         time.sleep(0.25)  # let the starting click finish
         done = 0
+        cx, cy = self.mouse.position()  # where the pointer is now (pen up)
+        glide_px = 20 if game else 60
         try:
             for i, path in enumerate(self.paths):
                 if self.stop_flag.is_set():
                     break
                 x, y = path[0]
-                self.mouse.move(ox + x, oy + y)
-                time.sleep(lift)  # arrive with the pen up
+                tx, ty = ox + x, oy + y
+                # Glide there with the pen up instead of jumping: some programs (Roblox) keep the
+                # old pointer position for a moment and would join the strokes with a stray line.
+                dist = max(abs(tx - cx), abs(ty - cy))
+                n = max(1, int(dist // glide_px))
+                for k in range(1, n + 1):
+                    self.mouse.move(cx + (tx - cx) * k / n, cy + (ty - cy) * k / n)
+                    if k < n:
+                        time.sleep(settle)
+                # Arrive with the pen up, a little longer after a long jump.
+                time.sleep(lift + min(0.2, dist / 2500))
                 self.mouse.down()
                 time.sleep(lift if game else settle * 2)
                 if len(path) == 1:
@@ -423,6 +434,7 @@ class AutoDraw:
                         time.sleep(settle)
                 time.sleep(settle * 2)  # let the end of the stroke register before lifting
                 self.mouse.up()
+                cx, cy = ox + path[-1][0], oy + path[-1][1]
                 time.sleep(lift)  # pen up long enough to be noticed
                 done = i + 1
                 if i % 20 == 0:
