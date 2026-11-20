@@ -1,0 +1,63 @@
+{
+  "name": "chesslens-pc",
+  "version": "1.0.0",
+  "description": "ChessLens for PC: play on the screen and hear the best or brilliant move from Stockfish.",
+  "main": "main.js",
+  "scripts": {
+    "postinstall": "node scripts/vendor.mjs",
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "dist": "electron-builder --win zip"
+  },
+  "author": "ChessLens",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "chess.js": "1.4.0",
+    "chessground": "9.2.1",
+    "electron": "38.2.0",
+    "electron-builder": "26.0.12",
+    "stockfish": "18.0.8"
+  },
+  "productName": "ChessLens",
+  "type": "module",
+  "build": {
+    "appId": "com.chesslens.pc",
+    "productName": "ChessLens",
+    "copyright": "ChessLens contributors (GPL-3.0)",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "overlay-preload.cjs",
+      "package.json",
+      "web/**/*",
+      "build/icon.png"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "ChessLens-Windows.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ChessLens",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

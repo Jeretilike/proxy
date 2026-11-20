@@ -1,0 +1,76 @@
+name: ChessLens Android
+
+# Builds the Android app (with Stockfish compiled for arm64 by the NDK) and publishes ChessLens.apk.
+
+on:
+  push:
+    paths:
+      - "ChessLensAndroid/**"
+      - ".github/workflows/chesslens-android.yml"
+  pull_request:
+    paths:
+      - "ChessLensAndroid/**"
+      - ".github/workflows/chesslens-android.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: chesslens-android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: ChessLensAndroid
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build Stockfish 17 for Android (arm64)
+        run: |
+          git clone --depth 1 --branch sf_17 https://github.com/official-stockfish/Stockfish.git "$RUNNER_TEMP/stockfish"
+          export PATH="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          # `build` downloads the neural networks and embeds them in the executable.
+          make -C "$RUNNER_TEMP/stockfish/src" -j"$(nproc)" build ARCH=armv8 COMP=ndk
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$RUNNER_TEMP/stockfish/src/stockfish" app/src/main/jniLibs/arm64-v8a/libstockfish.so
+          file app/src/main/jniLibs/arm64-v8a/libstockfish.so
+          ls -lh app/src/main/jniLibs/arm64-v8a/libstockfish.so
+
+      - name: Unit tests (chess rules, board finding, move detection)
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Build APK
+        run: |
+          ./gradlew --no-daemon assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk ChessLens.apk
+          ls -lh ChessLens.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChessLens-apk
+          path: ChessLensAndroid/ChessLens.apk
+
+      - name: Publish download link
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=chesslens-android-latest
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" ChessLens.apk \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "ChessLens for Android (latest build)" \
+            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Open this page on your Android phone, download ChessLens.apk and install it (see ChessLensAndroid/README.md)."

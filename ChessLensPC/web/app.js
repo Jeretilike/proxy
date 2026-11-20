@@ -1,0 +1,1195 @@
+// ChessLens for PC: play both sides on the screen; on your turn Stockfish finds the best move (or
+// a brilliant sacrifice in Brilliant mode), draws it on the board and says it out loud.
+
+import { Chess } from './vendor/chess.js';
+import { Engine } from './engine.js';
+import { chooseMove, spokenSan, sanFor, evaluationText, winChance } from './brilliant.js';
+import { ScreenReader } from './screen.js';
+
+const PIECE_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+const PIECE_NAME = { k: 'king', q: 'queen', r: 'rook', b: 'bishop', n: 'knight', p: 'pawn' };
+// Stockfish strength levels 1–10: Skill Level and thinking time per move.
+const LEVELS = [
+  { skill: 0, ms: 60, label: 'Beginner' }, { skill: 2, ms: 100, label: 'Novice' }, { skill: 4, ms: 150, label: 'Casual' },
+  { skill: 6, ms: 220, label: 'Club' }, { skill: 8, ms: 300, label: 'Intermediate' }, { skill: 11, ms: 450, label: 'Advanced' },
+  { skill: 14, ms: 650, label: 'Expert' }, { skill: 17, ms: 900, label: 'Master' }, { skill: 19, ms: 1300, label: 'Grandmaster' },
+  { skill: 20, ms: 2000, label: 'Full strength' },
+];
+const FILES = 'abcdefgh';
+const START_FEN = new Chess().fen();
+
+// ---------------------------------------------------------------------------------------------
+// Settings (kept in this computer's browser storage)
+
+const DEFAULTS = { mode: 'best', color: 'w', opponent: 'manual', level: 4, theme: 'green', sounds: true, showArrow: true, highlight: true, voice: true, speakEval: false, voiceName: '', thinkTime: 2000, multiPv: 6 };
+const settings = { ...DEFAULTS, ...load('settings', {}) };
+
+function load(key, fallback) {
+  try {
+    const raw = localStorage.getItem(`chesslens.${key}`);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function save(key, value) {
+  try {
+    localStorage.setItem(`chesslens.${key}`, JSON.stringify(value));
+  } catch {
+    // Storage unavailable: settings last for this session only.
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// State
+
+const game = new Chess();
+const saved = load('game', null);
+if (saved?.pgn) {
+  try { game.loadPgn(saved.pgn); } catch { game.reset(); }
+}
+let brilliantPlies = new Set(saved?.brilliantPlies ?? []);
+let flipped = settings.color === 'b';
+let selected = null;
+let suggestion = null; // { line, brilliant, san, fen }
+let analysisToken = 0;
+let editing = null; // { board: Map(square -> {color,type}), turn, tool }
+let animate = null; // { from, to } of a move to slide on the next render
+let engineThinking = false;
+
+const engine = new Engine();
+let reader = null; // screen reader, set up below
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------------------------------------
+// Board rendering
+
+function squareAt(row, col) {
+  const file = flipped ? 7 - col : col;
+  const rank = flipped ? row : 7 - row;
+  return FILES[file] + (rank + 1);
+}
+
+function squareCenter(square) {
+  const file = FILES.indexOf(square[0]);
+  const rank = Number(square[1]) - 1;
+  const col = flipped ? 7 - file : file;
+  const row = flipped ? rank : 7 - rank;
+  return { x: col + 0.5, y: row + 0.5 };
+}
+
+function pieceAt(square) {
+  if (editing) return editing.board.get(square) ?? null;
+  return game.get(square) ?? null;
+}
+
+function renderBoard() {
+  const board = $('board');
+  board.textContent = '';
+  const history = game.history({ verbose: true });
+  const last = editing ? null : history[history.length - 1];
+  const targets = new Map();
+  if (selected && !editing) {
+    for (const move of game.moves({ square: selected, verbose: true })) targets.set(move.to, move);
+  }
+  let checkSquare = null;
+  if (!editing && game.inCheck()) {
+    checkSquare = game.findPiece({ type: 'k', color: game.turn() })[0];
+  }
+
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const square = squareAt(row, col);
+      const cell = document.createElement('div');
+      const file = FILES.indexOf(square[0]);
+      const rank = Number(square[1]) - 1;
+      cell.className = `square ${(file + rank) % 2 === 1 ? 'light' : 'dark'}`;
+      cell.dataset.square = square;
+      if (last && (last.from === square || last.to === square)) cell.classList.add('last');
+      if (selected === square) cell.classList.add('selected');
+      if (square === checkSquare) cell.classList.add('check');
+      const piece = pieceAt(square);
+      if (targets.has(square)) cell.classList.add('target', piece ? 'occupied' : 'empty');
+      if (row === 7) cell.append(coord('file', square[0]));
+      if (col === 0) cell.append(coord('rank', square[1]));
+      if (piece) {
+        const div = document.createElement('div');
+        div.className = `piece pc-${piece.color}${piece.type}`;
+        cell.append(div);
+      }
+      board.append(cell);
+    }
+  }
+  board.className = `board theme-${settings.theme}`;
+  slidePiece();
+  renderArrow();
+  renderPlayers();
+  updateOverlay();
+  renderEvalBar();
+}
+
+/** Slides the piece that just moved from its old square (moves made by click, engine or screen). */
+function slidePiece() {
+  if (!animate) return;
+  const { from, to } = animate;
+  animate = null;
+  const piece = $('board').querySelector(`[data-square="${to}"] .piece`);
+  if (!piece) return;
+  const a = squareCenter(from), b = squareCenter(to);
+  piece.style.transform = `translate(${(a.x - b.x) * 100}%, ${(a.y - b.y) * 100}%)`;
+  piece.getBoundingClientRect();
+  piece.classList.add('anim');
+  piece.style.transform = '';
+  piece.addEventListener('transitionend', () => piece.classList.remove('anim'), { once: true });
+}
+
+/** Names, captured pieces and material difference above and below the board. */
+function renderPlayers() {
+  const bottomColor = flipped ? 'b' : 'w';
+  const topColor = bottomColor === 'w' ? 'b' : 'w';
+  const you = settings.color;
+  const opponentName = settings.opponent === 'engine' ? `Stockfish · ${LEVELS[settings.level - 1].label}` : 'Opponent';
+  const nameFor = (c) => (c === you ? 'You' : opponentName);
+  // Captured pieces: what's missing from each side's starting set.
+  const count = { w: {}, b: {} };
+  for (const row of game.board()) for (const cell of row) if (cell) count[cell.color][cell.type] = (count[cell.color][cell.type] ?? 0) + 1;
+  const start = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+  const missing = (c) => Object.entries(start).flatMap(([t, n]) => Array(Math.max(0, n - (count[c][t] ?? 0))).fill(t));
+  const material = (c) => Object.entries(count[c]).reduce((sum, [t, n]) => sum + PIECE_VALUE[t] * n, 0);
+  const diff = material('w') - material('b');
+  for (const [slot, color] of [['top', topColor], ['bottom', bottomColor]]) {
+    $(`${slot}Name`).textContent = nameFor(color);
+    $(`${slot}Avatar`).className = `avatar pc-${color}k`;
+    const box = $(`${slot}Captured`);
+    box.textContent = '';
+    const taken = missing(color === 'w' ? 'b' : 'w').sort((x, y) => PIECE_VALUE[x] - PIECE_VALUE[y]);
+    let previous = null;
+    for (const t of taken) {
+      const img = document.createElement('span');
+      img.className = `cap pc-${color === 'w' ? 'b' : 'w'}${t}${previous && previous !== t ? ' gap' : ''}`;
+      previous = t;
+      box.append(img);
+    }
+    const lead = color === 'w' ? diff : -diff;
+    if (lead > 0) {
+      const d = document.createElement('span');
+      d.className = 'diff';
+      d.textContent = `+${lead}`;
+      box.append(d);
+    }
+    $(`${slot}Thinking`).classList.toggle('hidden', !(engineThinking && game.turn() === color && color !== you));
+  }
+}
+
+function coord(kind, text) {
+  const span = document.createElement('span');
+  span.className = `coord ${kind}`;
+  span.textContent = text;
+  return span;
+}
+
+function renderArrow() {
+  const svg = $('arrows');
+  svg.textContent = '';
+  if (editing || !settings.showArrow || !suggestion || suggestion.fen !== game.fen()) return;
+  const move = suggestion.line.move;
+  const from = squareCenter(move.slice(0, 2));
+  const to = squareCenter(move.slice(2, 4));
+  const color = suggestion.brilliant ? '#1baca6' : '#81b64c';
+  const ns = 'http://www.w3.org/2000/svg';
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  const ux = dx / length, uy = dy / length;
+  const head = 0.42;
+  const end = { x: to.x - ux * head, y: to.y - uy * head };
+  const line = document.createElementNS(ns, 'line');
+  line.setAttribute('x1', from.x + ux * 0.15);
+  line.setAttribute('y1', from.y + uy * 0.15);
+  line.setAttribute('x2', end.x);
+  line.setAttribute('y2', end.y);
+  line.setAttribute('stroke', color);
+  line.setAttribute('stroke-width', '0.18');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('opacity', '0.85');
+  const tip = document.createElementNS(ns, 'polygon');
+  const px = -uy, py = ux;
+  tip.setAttribute('points', [
+    `${to.x - ux * 0.08},${to.y - uy * 0.08}`,
+    `${end.x + px * 0.26},${end.y + py * 0.26}`,
+    `${end.x - px * 0.26},${end.y - py * 0.26}`,
+  ].join(' '));
+  tip.setAttribute('fill', color);
+  tip.setAttribute('opacity', '0.85');
+  svg.append(line, tip);
+}
+
+let evalWhite = { cp: 0, mate: null };
+
+function renderEvalBar() {
+  const bar = $('evalBar');
+  bar.classList.toggle('flipped', flipped);
+  const chance = winChance(evalWhite);
+  $('evalFill').style.height = `${Math.round(chance * 100)}%`;
+  const label = $('evalLabel');
+  const text = evalWhite.mate != null
+    ? `M${Math.abs(evalWhite.mate)}`
+    : Math.abs((evalWhite.cp ?? 0) / 100).toFixed(1);
+  label.textContent = text;
+  // Show the number on the side that's ahead.
+  const whiteAhead = chance >= 0.5;
+  label.classList.toggle('top', whiteAhead === flipped);
+}
+
+function syncEvalBarHeight() {
+  const rect = $('board').getBoundingClientRect();
+  $('evalBar').style.height = `${rect.height}px`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Moving pieces (click or drag)
+
+let drag = null;
+
+function onPointerDown(event) {
+  const cell = event.target.closest('.square');
+  if (!cell || event.button > 0) {
+    if (cell && editing && event.button === 2) {
+      editing.board.delete(cell.dataset.square);
+      renderBoard();
+    }
+    return;
+  }
+  const square = cell.dataset.square;
+
+  if (editing) {
+    const tool = editing.tool;
+    if (!tool || tool === 'x') editing.board.delete(square);
+    else {
+      const existing = editing.board.get(square);
+      const piece = { color: tool[0], type: tool[1] };
+      if (existing && existing.color === piece.color && existing.type === piece.type) editing.board.delete(square);
+      else editing.board.set(square, piece);
+    }
+    renderBoard();
+    return;
+  }
+
+  // Against Stockfish, its pieces are its own.
+  if (settings.opponent === 'engine' && game.turn() !== settings.color && !(reader && reader.running)) return;
+  const piece = game.get(square);
+  if (selected && selected !== square) {
+    const legal = game.moves({ square: selected, verbose: true }).find((m) => m.to === square);
+    if (legal) {
+      tryMove(selected, square);
+      return;
+    }
+  }
+  if (piece && piece.color === game.turn()) {
+    selected = square;
+    renderBoard();
+    startDrag(event, square);
+  } else {
+    selected = null;
+    renderBoard();
+  }
+}
+
+function startDrag(event, square) {
+  const source = $('board').querySelector(`[data-square="${square}"] .piece`);
+  if (!source) return;
+  const size = $('board').getBoundingClientRect().width / 8;
+  const ghost = source.cloneNode(true);
+  ghost.classList.add('dragging');
+  ghost.style.width = ghost.style.height = `${size}px`;
+  ghost.style.left = `${event.clientX}px`;
+  ghost.style.top = `${event.clientY}px`;
+  document.body.append(ghost);
+  source.classList.add('ghost');
+  drag = { square, ghost, source, moved: false, x: event.clientX, y: event.clientY };
+}
+
+function onPointerMove(event) {
+  if (!drag) return;
+  if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 4) drag.moved = true;
+  drag.ghost.style.left = `${event.clientX}px`;
+  drag.ghost.style.top = `${event.clientY}px`;
+}
+
+function onPointerUp(event) {
+  if (!drag) return;
+  const { square, ghost, source, moved } = drag;
+  drag = null;
+  ghost.remove();
+  source.classList.remove('ghost');
+  if (!moved) return;
+  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.square');
+  if (target && target.dataset.square !== square) tryMove(square, target.dataset.square, true);
+}
+
+async function tryMove(from, to, dragged = false) {
+  const candidates = game.moves({ square: from, verbose: true }).filter((m) => m.to === to);
+  if (!candidates.length) {
+    selected = null;
+    renderBoard();
+    return;
+  }
+  let promotion;
+  if (candidates.some((m) => m.promotion)) {
+    promotion = await askPromotion(game.turn());
+    if (!promotion) {
+      renderBoard();
+      return;
+    }
+  }
+  makeMove({ from, to, promotion }, !dragged);
+}
+
+function askPromotion(color) {
+  return new Promise((resolve) => {
+    const box = $('promotion');
+    box.textContent = '';
+    for (const type of ['q', 'r', 'b', 'n']) {
+      const button = document.createElement('button');
+      button.className = `pc-${color}${type}`;
+      button.title = PIECE_NAME[type];
+      button.onclick = () => { box.classList.add('hidden'); resolve(type); };
+      box.append(button);
+    }
+    const cancel = (event) => {
+      if (event.target === box) { box.classList.add('hidden'); resolve(null); }
+    };
+    box.onclick = cancel;
+    box.classList.remove('hidden');
+  });
+}
+
+function makeMove(move, slide = true) {
+  const fenBefore = game.fen();
+  let played;
+  try {
+    played = game.move(move);
+  } catch {
+    return;
+  }
+  if (slide) animate = { from: played.from, to: played.to };
+  playSound(played);
+  if (suggestion && suggestion.fen === fenBefore && suggestion.brilliant && suggestion.line.move === played.lan) {
+    brilliantPlies.add(game.history().length - 1);
+  }
+  selected = null;
+  positionChanged();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Analysis
+
+function positionChanged() {
+  suggestion = null;
+  renderLines(null);
+  persistGame();
+  renderBoard();
+  renderMoves();
+  renderSuggestion();
+  analyze();
+}
+
+async function analyze() {
+  const token = ++analysisToken;
+  engine.stop();
+  const fen = game.fen();
+
+  engineThinking = false;
+  renderGameOver();
+  if (game.isGameOver()) {
+    setStatus(gameOverText());
+    renderSuggestion();
+    renderPlayers();
+    return;
+  }
+  const yourTurn = game.turn() === settings.color;
+  if (!yourTurn) {
+    if (settings.opponent === 'engine' && !(reader && reader.running)) {
+      playEngineMove(token, fen);
+      return;
+    }
+    setStatus(`${colorName(game.turn())} to move: play your opponent's move on the board.`);
+    renderSuggestion();
+    renderPlayers();
+    return;
+  }
+  setStatus('Thinking…');
+  renderSuggestion('thinking');
+  const mode = settings.mode;
+  try {
+    const lines = await engine.analyze(fen, {
+      movetime: settings.thinkTime,
+      multipv: mode === 'brilliant' ? settings.multiPv : 3,
+      onUpdate: (partial) => {
+        if (token === analysisToken && partial[0]) {
+          setWhiteEval(partial[0], fen);
+          renderLines(partial, fen);
+        }
+      },
+    });
+    if (token !== analysisToken) return;
+    $('engineName').textContent = engine.name;
+    if (!lines.length) {
+      setStatus(gameOverText());
+      return;
+    }
+    const choice = chooseMove(fen, lines, mode);
+    suggestion = { ...choice, fen, mode, san: sanFor(fen, choice.line.move), bestSan: sanFor(fen, lines[0].move) };
+    setWhiteEval(lines[0], fen);
+    setStatus('Your move.');
+    renderLines(lines, fen);
+    renderBoard();
+    renderSuggestion(null, true);
+    speakSuggestion();
+    if (suggestion.brilliant) toast(`Brilliant move: ${suggestion.san}!!`, 'brilliant');
+  } catch (error) {
+    if (token !== analysisToken) return;
+    setStatus(error.message, true);
+    renderSuggestion();
+  }
+}
+
+/** Stockfish plays the opponent's move at the chosen strength. */
+async function playEngineMove(token, fen) {
+  const level = LEVELS[settings.level - 1];
+  engineThinking = true;
+  setStatus('Stockfish is thinking…');
+  renderSuggestion();
+  renderPlayers();
+  const started = performance.now();
+  try {
+    const lines = await engine.analyze(fen, { movetime: level.ms, multipv: 1, skill: level.skill });
+    if (token !== analysisToken) return;
+    // A short pause so fast replies don't feel instant.
+    const wait = Math.max(0, 450 - (performance.now() - started));
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    if (token !== analysisToken || !lines.length) return;
+    engineThinking = false;
+    const m = lines[0].move;
+    makeMove({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+  } catch (error) {
+    if (token !== analysisToken) return;
+    engineThinking = false;
+    setStatus(error.message, true);
+    renderPlayers();
+  }
+}
+
+/** The engine's top lines, in chess notation. Clicking a line plays its first move. */
+function renderLines(lines, fen) {
+  const box = $('lines');
+  box.textContent = '';
+  if (!lines || !fen || fen !== game.fen()) return;
+  for (const line of lines.slice(0, settings.mode === 'brilliant' ? 4 : 3)) {
+    const row = document.createElement('div');
+    row.className = 'line';
+    if (suggestion && suggestion.line.move === line.move) row.classList.add('chosen', suggestion.brilliant ? 'brilliant' : 'best');
+    const score = document.createElement('span');
+    score.className = 'score';
+    const sign = fen.split(' ')[1] === 'w' ? 1 : -1;
+    const white = { cp: line.cp != null ? line.cp * sign : null, mate: line.mate != null ? line.mate * sign : null };
+    score.textContent = evaluationText(white);
+    if (winChance(white) < 0.5) score.classList.add('neg');
+    const pv = document.createElement('span');
+    pv.className = 'pv';
+    const chess = new Chess(fen);
+    const words = [];
+    for (const uci of (line.pv ?? [line.move]).slice(0, 10)) {
+      try {
+        const turn = chess.turn();
+        const number = chess.moveNumber();
+        const san = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }).san;
+        words.push(turn === 'w' ? `${number}. ${san}` : words.length ? san : `${number}… ${san}`);
+      } catch {
+        break;
+      }
+    }
+    pv.innerHTML = '';
+    words.forEach((w, i) => {
+      const part = i === 0 ? document.createElement('b') : document.createTextNode(' ' + w);
+      if (i === 0) part.textContent = w;
+      pv.append(part);
+    });
+    row.append(score, pv);
+    row.title = 'Play this move';
+    row.onclick = () => makeMove({ from: line.move.slice(0, 2), to: line.move.slice(2, 4), promotion: line.move[4] });
+    box.append(row);
+  }
+}
+
+function renderGameOver() {
+  const box = $('gameOver');
+  if (!game.isGameOver() || editing) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.textContent = gameOverText();
+  box.classList.remove('hidden');
+}
+
+let toastTimer = null;
+function toast(text, kind = '') {
+  const box = $('toast');
+  box.textContent = text;
+  box.className = `toast ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => box.classList.add('hidden'), 2600);
+}
+
+// Move sounds, made on the fly (no sound files).
+let audio = null;
+function playSound(move) {
+  if (!settings.sounds) return;
+  try {
+    audio ??= new AudioContext();
+    const now = audio.currentTime;
+    const capture = Boolean(move.captured);
+    const check = move.san.includes('+') || move.san.includes('#');
+    const tone = (freq, start, length, gain) => {
+      const osc = audio.createOscillator();
+      const vol = audio.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now + start);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.55, now + start + length);
+      vol.gain.setValueAtTime(gain, now + start);
+      vol.gain.exponentialRampToValueAtTime(0.001, now + start + length);
+      osc.connect(vol).connect(audio.destination);
+      osc.start(now + start);
+      osc.stop(now + start + length);
+    };
+    if (capture) { tone(320, 0, 0.09, 0.35); tone(200, 0.04, 0.12, 0.3); }
+    else tone(420, 0, 0.07, 0.3);
+    if (check) tone(880, 0.06, 0.12, 0.15);
+  } catch {
+    // No audio device: silent.
+  }
+}
+
+function setWhiteEval(line, fen) {
+  const sign = fen.split(' ')[1] === 'w' ? 1 : -1;
+  evalWhite = { cp: line.cp != null ? line.cp * sign : null, mate: line.mate != null ? line.mate * sign : null };
+  renderEvalBar();
+}
+
+function gameOverText() {
+  if (game.isCheckmate()) return `Checkmate. ${colorName(game.turn() === 'w' ? 'b' : 'w')} wins.`;
+  if (game.isStalemate()) return 'Stalemate: a draw.';
+  if (game.isThreefoldRepetition()) return 'Draw by repetition.';
+  if (game.isInsufficientMaterial()) return 'Draw: not enough material to mate.';
+  if (game.isDraw()) return 'Draw (fifty-move rule).';
+  return 'The game is over.';
+}
+
+const colorName = (c) => (c === 'w' ? 'White' : 'Black');
+
+function renderSuggestion(state, fresh = false) {
+  const card = $('suggestion');
+  card.classList.remove('fresh');
+  if (fresh) { card.getBoundingClientRect(); card.classList.add('fresh'); }
+  const current = suggestion && suggestion.fen === game.fen() ? suggestion : null;
+  card.classList.toggle('brilliant', Boolean(current?.brilliant));
+  $('badge').classList.toggle('hidden', !current?.brilliant);
+  $('playIt').disabled = !current;
+  $('sayAgain').disabled = !current;
+  if (current) {
+    $('suggestionMove').textContent = current.san ?? current.line.move;
+    $('suggestionEval').textContent = evaluationText(current.line);
+    $('suggestionNote').textContent = noteFor(current);
+  } else {
+    $('suggestionMove').textContent = state === 'thinking' ? '…' : '—';
+    $('suggestionEval').textContent = '';
+    $('suggestionNote').textContent = state === 'thinking'
+      ? (settings.mode === 'brilliant' ? 'Looking for a brilliant move…' : 'Finding the best move…')
+      : (game.isGameOver() ? '' : game.turn() === settings.color ? ''
+        : settings.opponent === 'engine' ? 'Stockfish is thinking…' : 'Waiting for your opponent’s move.');
+  }
+}
+
+function noteFor(s) {
+  if (s.brilliant) {
+    return s.san === s.bestSan
+      ? 'Brilliant: a sacrifice, and the best move.'
+      : `Brilliant: a sacrifice almost as good as the best move (${s.bestSan}).`;
+  }
+  if (s.mode === 'brilliant') return 'No brilliant move here. This is the best move.';
+  return 'Best move.';
+}
+
+function speakSuggestion() {
+  if (!suggestion || !settings.voice) return;
+  const words = spokenSan(suggestion.san ?? suggestion.line.move);
+  let text;
+  if (suggestion.brilliant) text = `Brilliant move! ${words}.`;
+  else if (suggestion.mode === 'brilliant') text = `No brilliant move. Best move: ${words}.`;
+  else text = `Best move: ${words}.`;
+  if (settings.speakEval) text += ` ${spokenEvaluation(suggestion.line)}.`;
+  say(text);
+}
+
+function spokenEvaluation(line) {
+  if (line.mate != null) return line.mate > 0 ? `You have mate in ${line.mate}` : `You get mated in ${-line.mate}`;
+  const pawns = Math.abs(line.cp / 100).toFixed(1);
+  if (Math.abs(line.cp) < 30) return 'The position is equal';
+  return line.cp > 0 ? `You're ahead by ${pawns}` : `You're behind by ${pawns}`;
+}
+
+function say(text) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  const voice = speechSynthesis.getVoices().find((v) => v.name === settings.voiceName);
+  if (voice) utterance.voice = voice;
+  utterance.rate = 1.02;
+  speechSynthesis.speak(utterance);
+}
+
+function setStatus(text, warn = false) {
+  const status = $('status');
+  status.textContent = text;
+  status.classList.toggle('warn', warn);
+}
+
+function renderMoves() {
+  const list = $('moves');
+  list.textContent = '';
+  const history = game.history();
+  const startFen = game.getHeaders().FEN;
+  const blackFirst = startFen && startFen.split(' ')[1] === 'b';
+  const plies = blackFirst ? ['…', ...history] : history;
+  const offset = blackFirst ? 1 : 0;
+  const firstNumber = startFen ? Number(startFen.split(' ')[5]) || 1 : 1;
+  for (let i = 0; i < plies.length; i += 2) {
+    const li = document.createElement('li');
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = `${firstNumber + i / 2}.`;
+    li.append(num);
+    for (const ply of [i, i + 1]) {
+      const span = document.createElement('span');
+      span.className = 'mv';
+      if (ply < plies.length) {
+        const index = ply - offset;
+        const brilliant = brilliantPlies.has(index);
+        span.textContent = plies[ply] + (brilliant ? '!!' : '');
+        if (brilliant) span.classList.add('brilliant-move');
+        if (ply === plies.length - 1) span.classList.add('current');
+      }
+      li.append(span);
+    }
+    list.append(li);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+
+function persistGame() {
+  save('game', { pgn: game.pgn(), brilliantPlies: [...brilliantPlies] });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Controls
+
+function setSegmented(groupId, attribute, value) {
+  for (const button of $(groupId).querySelectorAll('button')) {
+    button.setAttribute('aria-checked', String(button.dataset[attribute] === value));
+  }
+}
+
+function renderModeHelp() {
+  $('modeHelp').textContent = settings.mode === 'brilliant'
+    ? 'Finds chess.com-style “!!” sacrifices that are best or almost best. Otherwise, the best move.'
+    : 'Always the strongest move Stockfish finds.';
+}
+
+function bindControls() {
+  $('board').addEventListener('pointerdown', onPointerDown);
+  $('board').addEventListener('contextmenu', (e) => e.preventDefault());
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onPointerUp);
+
+  $('modeSwitch').addEventListener('click', (e) => {
+    const mode = e.target.closest('button')?.dataset.mode;
+    if (!mode || mode === settings.mode) return;
+    settings.mode = mode;
+    save('settings', settings);
+    setSegmented('modeSwitch', 'mode', mode);
+    renderModeHelp();
+    suggestion = null;
+    renderBoard();
+    analyze();
+  });
+
+  $('colorSwitch').addEventListener('click', (e) => {
+    const color = e.target.closest('button')?.dataset.color;
+    if (!color || color === settings.color) return;
+    settings.color = color;
+    save('settings', settings);
+    setSegmented('colorSwitch', 'color', color);
+    flipped = color === 'b';
+    suggestion = null;
+    renderBoard();
+    analyze();
+  });
+
+  $('opponentSwitch').addEventListener('click', (e) => {
+    const opponent = e.target.closest('button')?.dataset.opponent;
+    if (!opponent || opponent === settings.opponent) return;
+    settings.opponent = opponent;
+    save('settings', settings);
+    renderOpponent();
+    analyze();
+  });
+  $('level').addEventListener('input', () => {
+    settings.level = Number($('level').value);
+    save('settings', settings);
+    renderOpponent();
+  });
+
+  $('playIt').addEventListener('click', playSuggestion);
+  $('sayAgain').addEventListener('click', speakSuggestion);
+  $('undo').addEventListener('click', undo);
+  $('newGame').addEventListener('click', () => {
+    game.reset();
+    brilliantPlies = new Set();
+    evalWhite = { cp: 0, mate: null };
+    flipped = settings.color === 'b';
+    positionChanged();
+  });
+  $('flip').addEventListener('click', () => { flipped = !flipped; renderBoard(); });
+  $('setPosition').addEventListener('click', openPositionDialog);
+  $('openSettings').addEventListener('click', openSettings);
+
+  document.addEventListener('keydown', (e) => {
+    if (document.querySelector('dialog[open]') || e.target.matches('input, textarea, select')) return;
+    if (e.code === 'Space') { e.preventDefault(); playSuggestion(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
+    else if (e.key.toLowerCase() === 'f' && !e.ctrlKey) { flipped = !flipped; renderBoard(); }
+    else if (e.key.toLowerCase() === 'm' && !e.ctrlKey) { setMini(!document.body.classList.contains('mini')); }
+  });
+
+  new ResizeObserver(syncEvalBarHeight).observe($('board'));
+}
+
+function renderOpponent() {
+  setSegmented('opponentSwitch', 'opponent', settings.opponent);
+  $('levelRow').classList.toggle('hidden', settings.opponent !== 'engine');
+  $('level').value = String(settings.level);
+  $('levelValue').textContent = `${settings.level} · ${LEVELS[settings.level - 1].label}`;
+  renderPlayers();
+}
+
+function playSuggestion() {
+  if (editing || !suggestion || suggestion.fen !== game.fen()) return;
+  const m = suggestion.line.move;
+  makeMove({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+}
+
+function undo() {
+  if (editing || !game.undo()) return;
+  brilliantPlies.delete(game.history().length);
+  // Against Stockfish, take back its reply too so it's your move again.
+  if (settings.opponent === 'engine' && game.turn() !== settings.color && game.undo()) brilliantPlies.delete(game.history().length);
+  positionChanged();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Set position: FEN / PGN, or edit by hand
+
+function openPositionDialog() {
+  const dialog = $('positionDialog');
+  $('positionText').value = '';
+  $('positionError').textContent = '';
+  dialog.showModal();
+}
+
+$('positionDialog').addEventListener('close', () => {
+  const value = $('positionDialog').returnValue;
+  if (value === 'edit') startEditing();
+});
+
+$('loadPosition').addEventListener('click', (e) => {
+  const text = $('positionText').value.trim();
+  if (!text) return;
+  const next = new Chess();
+  try {
+    if (/^\s*([rnbqkpRNBQKP1-8]+\/){7}[rnbqkpRNBQKP1-8]+/.test(text)) next.load(fenWithDefaults(text));
+    else next.loadPgn(text);
+  } catch (error) {
+    e.preventDefault();
+    $('positionError').textContent = `That isn't a position I can read: ${error.message}`;
+    return;
+  }
+  game.loadPgn(next.pgn());
+  brilliantPlies = new Set();
+  positionChanged();
+});
+
+function fenWithDefaults(text) {
+  const parts = text.trim().split(/\s+/);
+  const defaults = ['', 'w', '-', '-', '0', '1'];
+  for (let i = parts.length; i < 6; i++) parts.push(defaults[i]);
+  return parts.join(' ');
+}
+
+function startEditing() {
+  const board = new Map();
+  for (const row of game.board()) for (const cell of row) if (cell) board.set(cell.square, { color: cell.color, type: cell.type });
+  editing = { board, turn: game.turn(), tool: 'wq' };
+  selected = null;
+  $('editBar').classList.remove('hidden');
+  setSegmented('editTurn', 'turn', editing.turn);
+  renderPalette();
+  renderBoard();
+}
+
+function renderPalette() {
+  const palette = $('palette');
+  palette.textContent = '';
+  for (const color of ['w', 'b']) {
+    for (const type of ['k', 'q', 'r', 'b', 'n', 'p']) {
+      const button = document.createElement('button');
+      button.className = `pc-${color}${type}`;
+      button.title = `${colorName(color)} ${PIECE_NAME[type]}`;
+      button.setAttribute('aria-pressed', String(editing.tool === color + type));
+      button.onclick = () => { editing.tool = color + type; renderPalette(); };
+      palette.append(button);
+    }
+  }
+  const eraser = document.createElement('button');
+  eraser.textContent = '✕';
+  eraser.className = 'eraser';
+  eraser.title = 'Clear squares';
+  eraser.setAttribute('aria-pressed', String(editing.tool === 'x'));
+  eraser.onclick = () => { editing.tool = 'x'; renderPalette(); };
+  palette.append(eraser);
+}
+
+$('editTurn').addEventListener('click', (e) => {
+  const turn = e.target.closest('button')?.dataset.turn;
+  if (!turn || !editing) return;
+  editing.turn = turn;
+  setSegmented('editTurn', 'turn', turn);
+});
+$('editClear').addEventListener('click', () => { editing.board.clear(); renderBoard(); });
+$('editStart').addEventListener('click', () => {
+  const start = new Chess();
+  editing.board.clear();
+  for (const row of start.board()) for (const cell of row) if (cell) editing.board.set(cell.square, { color: cell.color, type: cell.type });
+  editing.turn = 'w';
+  setSegmented('editTurn', 'turn', 'w');
+  renderBoard();
+});
+$('editCancel').addEventListener('click', stopEditing);
+$('editDone').addEventListener('click', () => {
+  const fen = editedFen();
+  const next = new Chess();
+  try {
+    next.load(fen);
+  } catch (error) {
+    setStatus(`That position isn't legal: ${error.message}`, true);
+    return;
+  }
+  game.load(fen);
+  brilliantPlies = new Set();
+  stopEditing();
+  positionChanged();
+});
+
+function stopEditing() {
+  editing = null;
+  $('editBar').classList.add('hidden');
+  renderBoard();
+}
+
+function editedFen() {
+  const rows = [];
+  for (let rank = 8; rank >= 1; rank--) {
+    let row = '', empty = 0;
+    for (const file of FILES) {
+      const piece = editing.board.get(file + rank);
+      if (!piece) { empty++; continue; }
+      if (empty) { row += empty; empty = 0; }
+      row += piece.color === 'w' ? piece.type.toUpperCase() : piece.type;
+    }
+    rows.push(row + (empty || ''));
+  }
+  // Castling is allowed when king and rook stand on their starting squares.
+  const at = (sq, color, type) => {
+    const p = editing.board.get(sq);
+    return p && p.color === color && p.type === type;
+  };
+  let castling = '';
+  if (at('e1', 'w', 'k')) { if (at('h1', 'w', 'r')) castling += 'K'; if (at('a1', 'w', 'r')) castling += 'Q'; }
+  if (at('e8', 'b', 'k')) { if (at('h8', 'b', 'r')) castling += 'k'; if (at('a8', 'b', 'r')) castling += 'q'; }
+  return `${rows.join('/')} ${editing.turn} ${castling || '-'} - 0 1`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Settings dialog
+
+function openSettings() {
+  $('voice').checked = settings.voice;
+  $('highlight').checked = settings.highlight;
+  $('boardTheme').value = settings.theme;
+  $('sounds').checked = settings.sounds;
+  $('showArrow').checked = settings.showArrow;
+  $('speakEval').checked = settings.speakEval;
+  $('thinkTime').value = String(settings.thinkTime);
+  $('multiPv').value = String(settings.multiPv);
+  fillVoices();
+  $('settingsDialog').showModal();
+}
+
+function fillVoices() {
+  const select = $('voiceName');
+  const voices = 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
+  select.textContent = '';
+  const auto = new Option('Default voice', '');
+  select.append(auto);
+  for (const v of voices.filter((v) => v.lang.startsWith('en'))) select.append(new Option(`${v.name} (${v.lang})`, v.name));
+  select.value = settings.voiceName;
+}
+if ('speechSynthesis' in window) speechSynthesis.addEventListener?.('voiceschanged', fillVoices);
+
+$('settingsDialog').addEventListener('close', () => {
+  const before = { thinkTime: settings.thinkTime, multiPv: settings.multiPv };
+  settings.voice = $('voice').checked;
+  settings.highlight = $('highlight').checked;
+  settings.theme = $('boardTheme').value;
+  settings.sounds = $('sounds').checked;
+  settings.showArrow = $('showArrow').checked;
+  renderBoard();
+  updateOverlay();
+  settings.speakEval = $('speakEval').checked;
+  settings.voiceName = $('voiceName').value;
+  settings.thinkTime = Number($('thinkTime').value);
+  settings.multiPv = Number($('multiPv').value);
+  save('settings', settings);
+  if (before.thinkTime !== settings.thinkTime || before.multiPv !== settings.multiPv) analyze();
+});
+
+// ---------------------------------------------------------------------------------------------
+// Reading the board from the screen
+
+let overlaySent = 'null';
+
+/** Outlines the suggested move on the chess site itself (when reading a whole screen). */
+function updateOverlay() {
+  if (!reader || !window.chesslensDesktop) return;
+  let payload = null;
+  const current = suggestion && suggestion.fen === game.fen() ? suggestion : null;
+  if (settings.highlight && current && reader.running && !editing) {
+    const move = current.line.move;
+    const from = reader.squareOnScreen(move.slice(0, 2));
+    const to = reader.squareOnScreen(move.slice(2, 4));
+    if (from && to) payload = { display: reader.geometry.display, from, to, brilliant: current.brilliant };
+  }
+  const key = JSON.stringify(payload);
+  if (key === overlaySent) return;
+  overlaySent = key;
+  window.chesslensDesktop.highlight(payload);
+}
+
+reader = new ScreenReader({
+  preview: $('screenPreview'),
+  onStatus: (text) => { $('screenStatus').textContent = text; },
+  onPosition: followScreen,
+  onFrame: () => updateOverlay(),
+});
+
+/** Brings this board in line with the board read from the screen. */
+function followScreen({ placement, placementFen: seen, whiteAtBottom, lastMover }) {
+  if (editing) return;
+  // On chess sites your own pieces are at the bottom.
+  const bottom = whiteAtBottom ? 'w' : 'b';
+  if (settings.color !== bottom) {
+    settings.color = bottom;
+    save('settings', settings);
+    setSegmented('colorSwitch', 'color', bottom);
+  }
+  flipped = !whiteAtBottom;
+
+  const current = game.fen().split(' ')[0];
+  if (seen === current) {
+    // Same pieces; fix the side to move if the highlight says otherwise.
+    if (lastMover && game.turn() === lastMover) loadScreenPosition(seen, lastMover === 'w' ? 'b' : 'w', placement);
+    else renderBoard();
+    return;
+  }
+  const path = movesBetween(game.fen(), seen);
+  if (path) {
+    for (const move of path) game.move(move);
+    selected = null;
+    positionChanged();
+    return;
+  }
+  const turn = lastMover ? (lastMover === 'w' ? 'b' : 'w') : game.turn();
+  loadScreenPosition(seen, turn, placement);
+}
+
+/** One or two legal moves that lead from `fen` to the placement seen on screen, if any. */
+function movesBetween(fen, seen) {
+  const chess = new Chess(fen);
+  for (const first of chess.moves({ verbose: true })) {
+    chess.move(first);
+    if (chess.fen().split(' ')[0] === seen) return [first.lan];
+    for (const second of chess.moves({ verbose: true })) {
+      chess.move(second);
+      const match = chess.fen().split(' ')[0] === seen;
+      chess.undo();
+      if (match) { chess.undo(); return [first.lan, second.lan]; }
+    }
+    chess.undo();
+  }
+  return null;
+}
+
+function loadScreenPosition(seen, turn, placement) {
+  const at = (sq, color, type) => {
+    const p = placement[(Number(sq[1]) - 1) * 8 + FILES.indexOf(sq[0])];
+    return p && p.color === color && p.type === type;
+  };
+  let castling = '';
+  if (at('e1', 'w', 'k')) { if (at('h1', 'w', 'r')) castling += 'K'; if (at('a1', 'w', 'r')) castling += 'Q'; }
+  if (at('e8', 'b', 'k')) { if (at('h8', 'b', 'r')) castling += 'k'; if (at('a8', 'b', 'r')) castling += 'q'; }
+  for (const side of [turn, turn === 'w' ? 'b' : 'w']) {
+    try {
+      game.load(`${seen} ${side} ${castling || '-'} - 0 1`);
+      brilliantPlies = new Set();
+      selected = null;
+      positionChanged();
+      return;
+    } catch {
+      // Try the other side to move (e.g. the side not to move can't be in check).
+    }
+  }
+  $('screenStatus').textContent = 'The position on screen isn’t a legal chess position. Is the whole board visible?';
+}
+
+async function fillScreenSources() {
+  const select = $('screenSource');
+  const sources = await reader.sources().catch(() => null);
+  if (!sources) {
+    select.classList.add('hidden');
+    return;
+  }
+  const previous = select.value || load('screenSource', '');
+  select.textContent = '';
+  // Browser windows showing a chess site first, then the other windows, then whole screens.
+  // Whole screens first (needed for the on-screen highlights), then chess sites, then the rest.
+  const rank = (s) => (s.screen ? 0 : /chess|lichess/i.test(s.name) ? 1 : 2);
+  sources.sort((a, b) => rank(a) - rank(b));
+  for (const s of sources) select.append(new Option(s.screen ? `Screen: ${s.name}` : s.name, s.id));
+  if ([...select.options].some((o) => o.value === previous)) select.value = previous;
+}
+
+$('screenSource').addEventListener('pointerenter', fillScreenSources);
+$('screenSource').addEventListener('change', () => {
+  save('screenSource', $('screenSource').value);
+  if (reader.running) startReading();
+});
+
+async function startReading() {
+  try {
+    await reader.start($('screenSource').value || null);
+    $('screenToggle').textContent = 'Stop';
+    $('screenCard').classList.add('on');
+    $('screenLive').classList.remove('hidden');
+    if (settings.opponent === 'engine') { settings.opponent = 'manual'; save('settings', settings); renderOpponent(); }
+    renderMiniBar();
+  } catch (error) {
+    $('screenStatus').textContent = error.name === 'NotAllowedError'
+      ? 'Screen reading was not allowed.'
+      : `Couldn’t read the screen: ${error.message}`;
+  }
+}
+
+$('screenToggle').addEventListener('click', () => {
+  if (reader.running) {
+    reader.stop('Stopped.');
+    $('screenToggle').textContent = 'Start';
+    $('screenCard').classList.remove('on');
+    $('screenLive').classList.add('hidden');
+    renderMiniBar();
+  } else {
+    startReading();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Mini mode
+
+function setMini(on) {
+  document.body.classList.toggle('mini', on);
+  window.chesslensDesktop?.mini(on);
+  save('mini', on);
+  renderMiniBar();
+}
+
+function renderMiniBar() {
+  const brilliant = settings.mode === 'brilliant';
+  $('miniMode').textContent = brilliant ? 'Brilliant !!' : 'Best';
+  $('miniMode').classList.toggle('brilliant', brilliant);
+  $('miniRead').textContent = reader.running ? 'Reading' : 'Screen';
+  $('miniRead').classList.toggle('on', reader.running);
+}
+
+$('miniToggle').addEventListener('click', () => setMini(true));
+$('miniExpand').addEventListener('click', () => setMini(false));
+$('miniMode').addEventListener('click', () => {
+  const next = settings.mode === 'brilliant' ? 'best' : 'brilliant';
+  $('modeSwitch').querySelector(`[data-mode="${next}"]`).click();
+  renderMiniBar();
+});
+$('miniRead').addEventListener('click', async () => {
+  $('screenToggle').click();
+  setTimeout(renderMiniBar, 400);
+});
+
+$('learnPieces').addEventListener('click', () => {
+  if (!reader.running || !reader.squares) {
+    $('screenStatus').textContent = 'Start reading the screen first, with the board visible.';
+    return;
+  }
+  const placement = new Array(64).fill(null);
+  for (const row of game.board()) for (const cell of row) {
+    if (cell) placement[(Number(cell.square[1]) - 1) * 8 + FILES.indexOf(cell.square[0])] = { color: cell.color, type: cell.type };
+  }
+  reader.learnPosition(placement, settings.color === 'w');
+  $('screenStatus').textContent = 'Learned the pieces from the board as set up here. Make sure every piece type is on the board.';
+});
+
+$('forgetPieces').addEventListener('click', () => {
+  reader.forgetPieces();
+  $('screenStatus').textContent = 'Forgot the pieces. Show a starting position to learn them again.';
+});
+
+fillScreenSources();
+renderMiniBar();
+
+// ---------------------------------------------------------------------------------------------
+// Start
+
+setSegmented('modeSwitch', 'mode', settings.mode);
+setSegmented('colorSwitch', 'color', settings.color);
+renderOpponent();
+renderModeHelp();
+bindControls();
+renderBoard();
+renderMoves();
+renderSuggestion();
+syncEvalBarHeight();
+setStatus('Starting Stockfish…');
+engine.start()
+  .then(() => {
+    $('engineName').textContent = `${engine.name} · ready`;
+    analyze();
+  })
+  .catch((error) => setStatus(error.message, true));
+
+// For the automated tests.
+window.chesslens = { game, engine, settings, reader, followScreen, get suggestion() { return suggestion; }, makeMove, analyze, positionChanged };

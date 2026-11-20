@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ChessLens highlight</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    .box { position: absolute; box-sizing: border-box; border-radius: 3px; }
+    .to { border: 5px solid var(--c); box-shadow: 0 0 12px var(--c); }
+    .from { border: 3px dashed var(--c); }
+  </style>
+</head>
+<body>
+  <script>
+    // Outlines the suggested move's squares over the chess site. Only the outer few percent of
+    // each square is drawn on, so the board stays readable underneath.
+    window.overlay.onDraw((p) => {
+      document.body.textContent = '';
+      if (!p) return;
+      for (const [kind, sq] of [['from', p.from], ['to', p.to]]) {
+        const box = document.createElement('div');
+        box.className = `box ${kind}`;
+        box.style.setProperty('--c', p.brilliant ? '#1baca6' : '#81b64c');
+        box.style.left = `${sq.x}px`;
+        box.style.top = `${sq.y}px`;
+        box.style.width = `${sq.w}px`;
+        box.style.height = `${sq.h}px`;
+        document.body.append(box);
+      }
+    });
+  </script>
+</body>
+</html>

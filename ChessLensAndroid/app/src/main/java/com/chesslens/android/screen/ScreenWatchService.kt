@@ -1,0 +1,490 @@
+package com.chesslens.android.screen
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.IBinder
+import android.view.WindowManager
+import com.chesslens.android.AppSettings
+import com.chesslens.android.Speaker
+import com.chesslens.android.chess.Brilliant
+import com.chesslens.android.chess.ChessBoard
+import com.chesslens.android.chess.ChessPosition
+import com.chesslens.android.chess.PieceColor
+import com.chesslens.android.chess.UciMove
+import com.chesslens.android.engine.StockfishEngine
+import com.chesslens.android.ui.MainActivity
+import com.chesslens.android.vision.PieceTemplate
+import com.chesslens.android.vision.RgbImage
+import com.chesslens.android.vision.ScreenGrid
+import com.chesslens.android.vision.ScreenVision
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Watches the phone's screen while you play in a chess app: finds the board, follows the game,
+ * and on your turn shows the best (or brilliant) move in a floating bubble, outlines it on the
+ * board and says it. Runs as a foreground service so it keeps going while ChessLens is minimised.
+ * Frames are only processed on the phone.
+ */
+class ScreenWatchService : Service() {
+    companion object {
+        private const val CHANNEL = "screen_watch"
+        private const val NOTIFICATION_ID = 7
+        private const val ACTION_STOP = "com.chesslens.android.STOP_SCREEN_WATCH"
+        private const val EXTRA_CODE = "code"
+        private const val EXTRA_DATA = "data"
+        private const val INTERVAL_MS = 600L
+
+        private val runningFlow = MutableStateFlow(false)
+        val running: StateFlow<Boolean> = runningFlow
+
+        fun start(context: Context, resultCode: Int, data: Intent) {
+            val intent = Intent(context, ScreenWatchService::class.java)
+                .putExtra(EXTRA_CODE, resultCode)
+                .putExtra(EXTRA_DATA, data)
+            context.startForegroundService(intent)
+        }
+
+        fun stop(context: Context) {
+            context.startService(Intent(context, ScreenWatchService::class.java).setAction(ACTION_STOP))
+        }
+    }
+
+    private lateinit var settings: AppSettings
+    private lateinit var engine: StockfishEngine
+    private lateinit var speaker: Speaker
+    private lateinit var overlay: Overlay
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var projection: MediaProjection? = null
+    private var display: VirtualDisplay? = null
+    private var reader: ImageReader? = null
+    private var thread: HandlerThread? = null
+    private var handler: Handler? = null
+    private var scale = 1.0
+
+    // Board reading state (only touched on the capture thread).
+    private var grid: ScreenGrid? = null
+    private var templates: Map<String, PieceTemplate> = emptyMap()
+    private var whiteAtBottom = true
+    private var pending: String? = null
+    private var lastEmitted: String? = null
+    private var unreadable = 0
+    /** Android only delivers a new frame when the screen changes; keep the last one to re-read. */
+    private var lastFrame: RgbImage? = null
+    // For the bubble's info line.
+    @Volatile private var frames = 0
+    @Volatile private var boardSeen = "no board yet"
+
+    // Game state (only touched on the main thread).
+    private var position: ChessPosition = ChessPosition.START
+    private var player = PieceColor.WHITE
+    private var analysis: Job? = null
+    private var analyzed: ChessPosition? = null
+    private val main = Handler(android.os.Looper.getMainLooper())
+
+    private val prefs by lazy { getSharedPreferences("chesslens_screen", MODE_PRIVATE) }
+    private var brilliantMode: Boolean
+        get() = prefs.getBoolean("brilliant", false)
+        set(value) { prefs.edit().putBoolean("brilliant", value).apply() }
+    /** Playing both sides yourself (a board that doesn't flip): suggest for whoever is to move. */
+    private var bothSides: Boolean
+        get() = prefs.getBoolean("bothSides", false)
+        set(value) { prefs.edit().putBoolean("bothSides", value).apply() }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        settings = AppSettings(this)
+        engine = StockfishEngine(this)
+        speaker = Speaker(this)
+        templates = ScreenVision.deserialize(prefs.getString("pieces", null))
+        overlay = Overlay(this, onToggleMode = ::toggleMode, onFlipTurn = ::flipTurn, onToggleBoth = ::toggleBothSides, onPickBoard = ::pickBoard, onStop = { stopSelf() })
+        picker = BoardPicker(this, onDone = { rect -> setManualBoard(rect) }, onAuto = { setManualBoard(null) })
+        manualBoard = prefs.getString("manualBoard", null)?.split(",")?.mapNotNull { it.toFloatOrNull() }
+            ?.takeIf { it.size == 4 }?.let { android.graphics.RectF(it[0], it[1], it[2], it[3]) }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startForeground(NOTIFICATION_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        val code = intent?.getIntExtra(EXTRA_CODE, 0) ?: 0
+        @Suppress("DEPRECATION")
+        val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
+        if (data == null || projection != null) return START_NOT_STICKY
+        try {
+            begin(code, data)
+        } catch (e: Exception) {
+            overlay.show()
+            overlay.setStatus("Screen capture didn't start: ${e.message}")
+            main.postDelayed({ stopSelf() }, 5000)
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun begin(code: Int, data: Intent) {
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        val mp = manager.getMediaProjection(code, data) ?: throw IllegalStateException("permission was not given")
+        projection = mp
+        val t = HandlerThread("chesslens-screen").also { it.start() }
+        thread = t
+        val h = Handler(t.looper)
+        handler = h
+        mp.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() { main.post { stopSelf() } }
+        }, h)
+
+        val bounds = getSystemService(WindowManager::class.java).maximumWindowMetrics.bounds
+        val width = bounds.width()
+        val height = bounds.height()
+        scale = if (width > 900) 0.5 else 1.0
+        val cw = (width * scale).toInt()
+        val ch = (height * scale).toInt()
+        val r = ImageReader.newInstance(cw, ch, PixelFormat.RGBA_8888, 2)
+        reader = r
+        display = mp.createVirtualDisplay(
+            "ChessLens", cw, ch, resources.displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, r.surface, null, h,
+        )
+        runningFlow.value = true
+        overlay.show()
+        overlay.setMode(brilliantMode)
+        overlay.setBothSides(bothSides)
+        overlay.setStatus(if (templates.size >= 12) "Looking for a chess board…" else "Open a new game once so I can learn your pieces.")
+        scope.launch { try { engine.start() } catch (_: Exception) {} }
+        h.postDelayed(::tick, INTERVAL_MS)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Capture thread
+
+    private fun tick() {
+        val h = handler ?: return
+        try {
+            val image = reader?.acquireLatestImage()
+            // A still screen sends no new frames: read the last one again, so a position that
+            // has settled is confirmed (it must be seen twice) without waiting for the screen to change.
+            val frame = image?.use { toRgb(it) }?.also { lastFrame = it } ?: lastFrame
+            if (frame != null) {
+                frames++
+                read(frame)
+            }
+        } catch (e: Throwable) {
+            main.post { overlay.setStatus("Reading the screen failed: ${e.javaClass.simpleName} ${e.message ?: ""}") }
+        }
+        onMain(::showInfo)
+        h.postDelayed(::tick, INTERVAL_MS)
+    }
+
+    private fun toRgb(image: android.media.Image): RgbImage {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val w = image.width
+        val hgt = image.height
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val pixels = IntArray(w * hgt)
+        val row = ByteArray(rowStride)
+        for (y in 0 until hgt) {
+            buffer.position(y * rowStride)
+            buffer.get(row, 0, minOf(rowStride, buffer.remaining()))
+            var o = 0
+            val base = y * w
+            for (x in 0 until w) {
+                pixels[base + x] = ((row[o].toInt() and 255) shl 16) or ((row[o + 1].toInt() and 255) shl 8) or (row[o + 2].toInt() and 255)
+                o += pixelStride
+            }
+        }
+        // Blank out the bubble so it is never read as part of the board.
+        overlay.bubbleRect()?.let { rect ->
+            val x0 = (rect.left * scale).toInt().coerceIn(0, w)
+            val x1 = (rect.right * scale).toInt().coerceIn(0, w)
+            val y0 = (rect.top * scale).toInt().coerceIn(0, hgt)
+            val y1 = (rect.bottom * scale).toInt().coerceIn(0, hgt)
+            for (y in y0 until y1) java.util.Arrays.fill(pixels, y * w + x0, y * w + x1, 0)
+        }
+        return RgbImage(w, hgt, pixels)
+    }
+
+    private lateinit var picker: BoardPicker
+    /** The board marked by hand (screen pixels), or null to find it automatically. */
+    @Volatile private var manualBoard: android.graphics.RectF? = null
+
+    private fun pickBoard() {
+        val start = manualBoard ?: grid?.let {
+            android.graphics.RectF((it.x / scale).toFloat(), (it.y / scale).toFloat(), ((it.x + 8 * it.cw) / scale).toFloat(), ((it.y + 8 * it.ch) / scale).toFloat())
+        }
+        picker.show(start)
+    }
+
+    private fun setManualBoard(rect: android.graphics.RectF?) {
+        manualBoard = rect
+        prefs.edit().putString("manualBoard", rect?.let { "${it.left},${it.top},${it.right},${it.bottom}" }).apply()
+        grid = null
+        lastEmitted = null
+        overlay.setStatus(if (rect != null) "Reading only inside the frame you marked." else "Finding the board automatically.")
+    }
+
+    private fun read(img: RgbImage) {
+        // While the frame is being placed, the screen shows the frame, not the board.
+        if (picker.isShowing) return
+        val manual = manualBoard
+        val found = if (manual != null) {
+            ScreenVision.snap(img, ScreenGrid(manual.left * scale, manual.top * scale, manual.width() * scale / 8, manual.height() * scale / 8))
+        } else ScreenVision.findBoard(img, grid)
+        boardSeen = when {
+            found == null -> "no board"
+            templates.size < 12 -> "board ✓, pieces not learned"
+            else -> "board ✓"
+        }
+        if (found == null) {
+            if (grid != null) main.post { overlay.setStatus("Lost the board. Keep the whole board visible."); overlay.clearOutline() }
+            else main.post { overlay.setStatus("Looking for a chess board…") }
+            grid = null
+            return
+        }
+        grid = found
+        // Keep the bubble off the board (it would hide the pieces under it).
+        val boardRect = android.graphics.RectF(
+            (found.x / scale).toFloat(), (found.y / scale).toFloat(),
+            ((found.x + 8 * found.cw) / scale).toFloat(), ((found.y + 8 * found.ch) / scale).toFloat(),
+        )
+        main.post { overlay.avoidBoard(boardRect) }
+        val squares = ScreenVision.readSquares(img, found)
+        ScreenVision.learnFromStart(squares)?.let { (learned, bottomWhite) ->
+            val first = templates.size < 12
+            templates = learned
+            whiteAtBottom = bottomWhite
+            prefs.edit().putString("pieces", ScreenVision.serialize(learned)).apply()
+            if (first) main.post { overlay.setStatus("Learned your pieces.") }
+        }
+        if (templates.size < 12) {
+            main.post { overlay.setStatus("Board found. Open a new game once so I can learn your pieces.") }
+            return
+        }
+        val reading = ScreenVision.recognize(squares, templates, whiteAtBottom)
+        if (reading == null) {
+            boardSeen = "board ✓, square unclear"
+            pending = null
+            // The board may have shifted a little (scrolling, a banner): look for it afresh.
+            if (++unreadable >= 3) grid = null
+            main.post { overlay.setStatus("A square is unclear (arrow, dragged piece…)."); overlay.clearOutline() }
+            return
+        }
+        unreadable = 0
+        whiteAtBottom = reading.whiteAtBottom
+        val key = reading.board.placementFen + (reading.lastMover?.fenLetter ?: "-") + reading.whiteAtBottom
+        if (pending != key) { pending = key; return }
+        // A reading already handled is only passed on again while it still disagrees with the game,
+        // so the follower can notice the screen persistently showing something else.
+        if (key == lastEmitted && reading.board == followedBoard) return
+        lastEmitted = key
+        val gridNow = found
+        val readSquares = squares
+        val readBoard = reading.board
+        val bottomWhite = reading.whiteAtBottom
+        onMain {
+            follow(readBoard, bottomWhite, reading.lastMover, reading.uncertain, gridNow)
+            // Squares that were misread: learn from them (on the capture thread, which owns the pieces).
+            val truth = position.board
+            val wrong = (0 until 64).filter { readBoard.at(ScreenVision.boardIndex(it, bottomWhite)) != truth.at(ScreenVision.boardIndex(it, bottomWhite)) }
+            if (wrong.isNotEmpty() && wrong.size <= GameFollower.MAX_MISREAD) {
+                handler?.post {
+                    ScreenVision.refine(readSquares, truth, bottomWhite, templates, wrong)
+                    prefs.edit().putString("pieces", ScreenVision.serialize(templates)).apply()
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Main thread: game following and suggestions
+
+    /**
+     * Runs [block] on the main thread; an error is shown in the bubble (with where it happened)
+     * instead of closing ChessLens, so it can be reported.
+     */
+    private fun onMain(block: () -> Unit) {
+        main.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                val where = t.stackTrace.firstOrNull { it.className.startsWith("com.chesslens") }
+                    ?.let { " at ${it.fileName}:${it.lineNumber}" } ?: ""
+                overlay.setStatus("Error: ${t.javaClass.simpleName} ${t.message ?: ""}$where")
+                overlay.clearOutline()
+                analyzed = null
+            }
+        }
+    }
+
+    private var screenGrid: ScreenGrid? = null
+
+    private val follower = GameFollower()
+    /** The game's current board, for the capture thread. */
+    @Volatile private var followedBoard: ChessBoard? = null
+
+    private fun follow(seen: ChessBoard, bottomWhite: Boolean, lastMover: PieceColor?, uncertain: Int, gridNow: ScreenGrid) {
+        screenGrid = gridNow
+        player = if (bottomWhite) PieceColor.WHITE else PieceColor.BLACK
+        follower.position = position
+        position = follower.follow(seen, lastMover, uncertain)
+        followedBoard = position.board
+        update()
+    }
+
+    private fun update() {
+        if (position.legalMoves().isEmpty()) {
+            analysis?.cancel()
+            overlay.setMove(null, false, if (position.board.isInCheck(position.sideToMove)) "Checkmate." else "Stalemate.")
+            overlay.clearOutline()
+            return
+        }
+        if (!bothSides && position.sideToMove != player) {
+            analysis?.cancel()
+            analyzed = null
+            overlay.setMove(null, false, "Opponent's move…")
+            overlay.clearOutline()
+            return
+        }
+        if (position == analyzed) return
+        analyzed = position
+        // The old outline belongs to the previous position.
+        overlay.clearOutline()
+        val target = position
+        val brilliant = brilliantMode
+        overlay.setMove(null, false, if (brilliant) "Looking for a brilliant move…" else "Thinking…")
+        analysis?.cancel()
+        analysis = scope.launch {
+            try {
+                val lines = engine.analyzeLines(target.fen, settings.thinkTimeMillis, if (brilliant) 6 else 1)
+                val (line, isBrilliant) = Brilliant.choose(target, lines, brilliant) ?: return@launch
+                val move = UciMove.parse(line.move) ?: return@launch
+                withContext(Dispatchers.Main) {
+                    if (target != position) return@withContext
+                    val san = target.board.shortNotation(move)
+                    val note = when {
+                        isBrilliant -> "Brilliant!!"
+                        brilliant -> "No brilliant move. Best move."
+                        else -> "Best move."
+                    }
+                    overlay.setMove(san, isBrilliant, note + evaluation(line))
+                    outline(move, isBrilliant)
+                    val words = target.board.spokenDescription(move)
+                    speaker.say(if (isBrilliant) "Brilliant move! $words" else if (brilliant) "No brilliant move. $words" else words)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    // Try this position again on the next read.
+                    if (analyzed == target) analyzed = null
+                    lastEmitted = null
+                    overlay.setStatus(e.message ?: "Stockfish failed.")
+                }
+            }
+        }
+    }
+
+    private fun evaluation(line: com.chesslens.android.chess.EngineLine): String {
+        line.mate?.let { return if (it > 0) "  ·  Mate in $it" else "  ·  Mated in ${-it}" }
+        val pawns = (line.centipawns ?: 0) / 100.0
+        return "  ·  " + (if (pawns > 0) "+" else "") + String.format("%.1f", pawns)
+    }
+
+    private fun outline(move: UciMove, brilliant: Boolean) {
+        val g = screenGrid ?: return
+        fun cell(file: Int, rank: Int): android.graphics.RectF {
+            val col = if (whiteAtBottom) file else 7 - file
+            val row = if (whiteAtBottom) 7 - rank else rank
+            val left = (g.x + col * g.cw) / scale
+            val top = (g.y + row * g.ch) / scale
+            return android.graphics.RectF(left.toFloat(), top.toFloat(), (left + g.cw / scale).toFloat(), (top + g.ch / scale).toFloat())
+        }
+        overlay.setOutline(cell(move.from.file, move.from.rank), cell(move.to.file, move.to.rank), brilliant)
+    }
+
+    /** One line of what ChessLens currently sees and thinks, to make problems easy to report. */
+    private fun showInfo() {
+        val side = { c: PieceColor -> if (c == PieceColor.WHITE) "White" else "Black" }
+        val you = if (bothSides) "both sides" else side(player)
+        overlay.setInfo("$boardSeen · you: $you · to move: ${side(position.sideToMove)} · read #$frames")
+    }
+
+    /** The bubble's ⇄ button: whose turn it is, when the screen didn't make it clear. */
+    private fun flipTurn() {
+        position = position.copy(sideToMove = position.sideToMove.opposite, enPassant = null)
+        analyzed = null
+        update()
+    }
+
+    private fun toggleBothSides() {
+        bothSides = !bothSides
+        overlay.setBothSides(bothSides)
+        analyzed = null
+        update()
+    }
+
+    private fun toggleMode() {
+        brilliantMode = !brilliantMode
+        overlay.setMode(brilliantMode)
+        analyzed = null
+        update()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+
+    private fun notification(): Notification {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Reading the chess board", NotificationManager.IMPORTANCE_LOW))
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val stop = PendingIntent.getService(this, 1, Intent(this, ScreenWatchService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE)
+        return Notification.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_menu_view)
+            .setContentTitle("ChessLens is reading your chess board")
+            .setContentText("Tap to open ChessLens.")
+            .setContentIntent(open)
+            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
+            .setOngoing(true)
+            .build()
+    }
+
+    override fun onDestroy() {
+        runningFlow.value = false
+        handler?.removeCallbacksAndMessages(null)
+        display?.release()
+        reader?.close()
+        projection?.stop()
+        thread?.quitSafely()
+        scope.cancel()
+        engine.shutdown()
+        overlay.hide()
+        picker.hide()
+        projection = null
+        super.onDestroy()
+    }
+}
