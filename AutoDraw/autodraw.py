@@ -133,7 +133,7 @@ class AutoDraw:
         self.threshold = tk.IntVar(value=128)
         self.detail = tk.IntVar(value=2)
         self.speed = tk.IntVar(value=3)
-        self.mode = tk.StringVar(value="Fill")
+        self.mode = tk.StringVar(value="Lines")
         self.invert = tk.BooleanVar(value=False)
         self.game_mode = tk.BooleanVar(value=False)
         self.min_piece = tk.IntVar(value=4)
@@ -204,7 +204,7 @@ class AutoDraw:
 
         slider("Size (longest side)", self.size, 50, 900, " px")
         slider("Darkness cut-off", self.threshold, 10, 245)
-        slider("Line spacing (less = more detail)", self.detail, 1, 8, " px")
+        slider("Fill row spacing (less = more detail)", self.detail, 1, 8, " px")
         slider("Speed (1 = careful, 10 = fastest)", self.speed, 1, 10)
         slider("Skip specks smaller than", self.min_piece, 0, 30, " px")
         slider("Pause between strokes (more if lines get joined)", self.lift_ms, 10, 200, " ms")
@@ -212,7 +212,7 @@ class AutoDraw:
         modes = ttk.Frame(right)
         modes.pack(fill="x", pady=(6, 2))
         ttk.Label(modes, text="Draw").pack(side="left")
-        for m in ("Fill", "Outline"):
+        for m in ("Lines", "Outline", "Fill"):
             ttk.Radiobutton(modes, text=m, value=m, variable=self.mode, command=self.rebuild).pack(side="left", padx=6)
         ttk.Checkbutton(right, text="Swap black and white", variable=self.invert, command=self.rebuild).pack(anchor="w", pady=2)
         ttk.Checkbutton(right, text="Game mode (Roblox and other games: slower, smoother)", variable=self.game_mode).pack(anchor="w", pady=2)
@@ -267,20 +267,43 @@ class AutoDraw:
             self.set_status("No image on the clipboard. Copy a picture first.")
 
     def rebuild(self):
+        """Recalculates the drawing shortly after the settings stop changing, in the background."""
         if self.source is None:
             return
-        self.bw = to_black_and_white(self.source, self.size.get(), self.threshold.get(), self.invert.get(), self.mode.get() == "Outline")
-        if self.mode.get() == "Outline":
-            # Line art: follow each line like a pen (far fewer pen lifts than scanning rows).
-            self.paths = make_paths(self.bw, min_length=self.min_piece.get())
+        if getattr(self, "_pending", None):
+            self.root.after_cancel(self._pending)
+        self._pending = self.root.after(250, self._rebuild_now)
+
+    def _rebuild_now(self):
+        self._pending = None
+        self._generation = getattr(self, "_generation", 0) + 1
+        settings = dict(
+            source=self.source, size=self.size.get(), threshold=self.threshold.get(), invert=self.invert.get(),
+            mode=self.mode.get(), spacing=self.detail.get(), min_piece=self.min_piece.get(),
+        )
+        self.set_status("Updating…")
+        threading.Thread(target=self._work, args=(self._generation, settings), daemon=True).start()
+
+    def _work(self, generation, st):
+        mode = st["mode"]
+        bw = to_black_and_white(st["source"], st["size"], st["threshold"], st["invert"],
+                                outline=mode == "Outline", lines=mode == "Lines")
+        if mode in ("Lines", "Outline"):
+            # Follow each line like a pen (far fewer pen lifts than scanning rows).
+            paths = make_paths(bw, min_length=st["min_piece"])
         else:
-            # Rows, drawn nearest-first and joined row to row where they touch (fewer pen lifts).
-            spacing = self.detail.get()
-            rows = [r for r in make_strokes(self.bw, spacing) if r[2] - r[1] + 1 >= self.min_piece.get()]
-            self.paths = order_and_join(strokes_to_paths(rows), spacing)
-        self.drawn = rasterize(self.paths, self.bw.size)
-        w, h = self.bw.size
-        self.set_status(f"{w}×{h} px, {len(self.paths)} strokes. Press F2 to preview, then click where to draw.")
+            # Rows, drawn nearest-first and joined row to row where they touch.
+            rows = [r for r in make_strokes(bw, st["spacing"]) if r[2] - r[1] + 1 >= st["min_piece"]]
+            paths = order_and_join(strokes_to_paths(rows), st["spacing"])
+        drawn = rasterize(paths, bw.size)
+        self.root.after(0, lambda: self._apply(generation, bw, paths, drawn))
+
+    def _apply(self, generation, bw, paths, drawn):
+        if generation != self._generation:
+            return  # settings changed again meanwhile
+        self.bw, self.paths, self.drawn = bw, paths, drawn
+        w, h = bw.size
+        self.set_status(f"{w}×{h} px, {len(paths)} strokes. Press F2 to preview, then click where to draw.")
         self.show_preview()
 
     def show_preview(self):

@@ -59,3 +59,14 @@ def test_traced_paths_cover_the_outline_with_few_pen_lifts():
     assert all(near(p) for p in black)
     # A circle and a line: a handful of strokes, not one per row (row scanning needs ~160).
     assert len(paths) <= 8, len(paths)
+
+
+def test_lines_mode_draws_each_thick_line_once():
+    img = Image.new("RGB", (200, 100), "white")
+    ImageDraw.Draw(img).line([20, 50, 180, 50], fill="black", width=7)  # a thick line
+    thinned = to_black_and_white(img, 200, 128, lines=True)
+    col = [y for y in range(100) if thinned.getpixel((100, y)) == 0]
+    assert len(col) == 1 and 47 <= col[0] <= 53  # one pixel, in the middle
+    outline = to_black_and_white(img, 200, 128, outline=True)
+    assert len([y for y in range(100) if outline.getpixel((100, y)) == 0]) == 2  # outline: two edges
+    assert len(make_paths(thinned)) == 1

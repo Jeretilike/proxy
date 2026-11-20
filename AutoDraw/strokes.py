@@ -3,7 +3,7 @@
 from PIL import Image, ImageFilter, ImageOps
 
 
-def to_black_and_white(image, size, threshold, invert=False, outline=False):
+def to_black_and_white(image, size, threshold, invert=False, outline=False, lines=False, smooth=False):
     """Black-and-white copy of `image` scaled so its longest side is `size` pixels.
 
     Returns a mode "L" image where 0 (black) means "draw here" and 255 means "leave blank".
@@ -18,7 +18,13 @@ def to_black_and_white(image, size, threshold, invert=False, outline=False):
     gray = gray.resize((max(1, round(gray.width * scale)), max(1, round(gray.height * scale))), Image.LANCZOS)
     if invert:
         gray = ImageOps.invert(gray)
+    if smooth:
+        # Removes grain and specks before cutting to black and white.
+        gray = gray.filter(ImageFilter.MedianFilter(3))
     bw = gray.point(lambda v: 0 if v < threshold else 255)
+    if lines:
+        # Each black line thinned to its centre, so it is drawn once (like tracing paper).
+        return thin(bw)
     if outline:
         # Edges of the black areas: a black pixel next to a white one.
         eroded = bw.filter(ImageFilter.MaxFilter(3))  # white grows into black
@@ -241,3 +247,63 @@ def rasterize(paths, size):
                 if 0 <= x < w and 0 <= y < h:
                     px[x, y] = 0
     return img
+
+
+def thin(bw):
+    """Zhang-Suen thinning: shrinks every black shape to a 1-pixel-wide centre line.
+
+    Only pixels on the current border are examined each pass (the neighbours of pixels just
+    removed join the border), which keeps it quick on big pictures.
+    """
+    w, h = bw.size
+    px = bw.load()
+    black = bytearray((w + 2) * (h + 2))  # one pixel of white padding all round
+    W = w + 2
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] == 0:
+                black[(y + 1) * W + x + 1] = 1
+    offsets = (-W, -W + 1, 1, W + 1, W, W - 1, -1, -W - 1)  # p2..p9 clockwise from north
+
+    def on_border(i):
+        return black[i] and (not black[i - W] or not black[i + 1] or not black[i + W] or not black[i - 1])
+
+    border = {i for i in range(len(black)) if black[i] and on_border(i)}
+    step = 0
+    quiet = 0
+    while quiet < 2:
+        remove = []
+        for i in border:
+            if not black[i]:
+                continue
+            p = [black[i + o] for o in offsets]
+            n = sum(p)
+            if n < 2 or n > 6:
+                continue
+            if sum(1 for k in range(8) if p[k] == 0 and p[(k + 1) % 8] == 1) != 1:
+                continue
+            p2, p4, p6, p8 = p[0], p[2], p[4], p[6]
+            if step == 0 and p2 * p4 * p6 == 0 and p4 * p6 * p8 == 0:
+                remove.append(i)
+            elif step == 1 and p2 * p4 * p8 == 0 and p2 * p6 * p8 == 0:
+                remove.append(i)
+        for i in remove:
+            black[i] = 0
+        if remove:
+            quiet = 0
+            nxt = set()
+            for i in remove:
+                for o in offsets:
+                    if black[i + o]:
+                        nxt.add(i + o)
+            border = (border - set(remove)) | nxt
+        else:
+            quiet += 1
+        step = 1 - step
+    out = Image.new("L", (w, h), 255)
+    o = out.load()
+    for i in range(len(black)):
+        if black[i]:
+            y, x = divmod(i, W)
+            o[x - 1, y - 1] = 0
+    return out
