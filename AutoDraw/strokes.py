@@ -60,7 +60,7 @@ def make_strokes(bw, spacing=1):
 # Tracing lines (for outlines / line art): follow each line like a pen instead of scanning rows
 
 
-def make_paths(bw, tolerance=0.8, join_gap=2):
+def make_paths(bw, tolerance=0.8, join_gap=2, min_length=0):
     """Polylines that follow the black lines of `bw` (8-connected), each drawn without lifting.
 
     Returns a list of paths, each a list of (x, y) points; consecutive points are joined by
@@ -127,6 +127,9 @@ def make_paths(bw, tolerance=0.8, join_gap=2):
                 visited[y * w + x] = 1
                 path.append((x, y))
             paths.append(path)
+    if min_length > 0:
+        # Specks and tiny bits (noise, texture) cost a pen lift each and add little.
+        paths = [p for p in paths if len(p) >= min_length]
     paths = order_and_join(paths, join_gap)
     return [simplify(p, tolerance) for p in paths]
 

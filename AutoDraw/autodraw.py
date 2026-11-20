@@ -116,8 +116,8 @@ class AutoDraw:
     def __init__(self):
         self.root = TkinterDnD.Tk() if TkinterDnD else tk.Tk()
         self.root.title("AutoDraw")
-        self.root.geometry("820x600")
-        self.root.minsize(700, 520)
+        self.root.geometry("840x720")
+        self.root.minsize(720, 660)
         self.root.configure(bg="#1f1d1a")
 
         self.source = None  # original image
@@ -136,6 +136,8 @@ class AutoDraw:
         self.mode = tk.StringVar(value="Fill")
         self.invert = tk.BooleanVar(value=False)
         self.game_mode = tk.BooleanVar(value=False)
+        self.min_piece = tk.IntVar(value=4)
+        self.lift_ms = tk.IntVar(value=40)
 
         self.build_ui()
         self.listen()
@@ -204,6 +206,8 @@ class AutoDraw:
         slider("Darkness cut-off", self.threshold, 10, 245)
         slider("Line spacing (less = more detail)", self.detail, 1, 8, " px")
         slider("Speed (1 = careful, 10 = fastest)", self.speed, 1, 10)
+        slider("Skip specks smaller than", self.min_piece, 0, 30, " px")
+        slider("Pause between strokes (more if lines get joined)", self.lift_ms, 10, 200, " ms")
 
         modes = ttk.Frame(right)
         modes.pack(fill="x", pady=(6, 2))
@@ -268,11 +272,12 @@ class AutoDraw:
         self.bw = to_black_and_white(self.source, self.size.get(), self.threshold.get(), self.invert.get(), self.mode.get() == "Outline")
         if self.mode.get() == "Outline":
             # Line art: follow each line like a pen (far fewer pen lifts than scanning rows).
-            self.paths = make_paths(self.bw)
+            self.paths = make_paths(self.bw, min_length=self.min_piece.get())
         else:
             # Rows, drawn nearest-first and joined row to row where they touch (fewer pen lifts).
             spacing = self.detail.get()
-            self.paths = order_and_join(strokes_to_paths(make_strokes(self.bw, spacing)), spacing)
+            rows = [r for r in make_strokes(self.bw, spacing) if r[2] - r[1] + 1 >= self.min_piece.get()]
+            self.paths = order_and_join(strokes_to_paths(rows), spacing)
         self.drawn = rasterize(self.paths, self.bw.size)
         w, h = self.bw.size
         self.set_status(f"{w}×{h} px, {len(self.paths)} strokes. Press F2 to preview, then click where to draw.")
@@ -363,11 +368,11 @@ class AutoDraw:
         # program joins the strokes with long stray lines.
         speed = self.speed.get()
         game = self.game_mode.get()
-        lift = [0.05, 0.04, 0.03, 0.025, 0.022, 0.02, 0.018, 0.016, 0.014, 0.012][speed - 1]
+        lift = self.lift_ms.get() / 1000
         settle = [0.012, 0.009, 0.007, 0.005, 0.004, 0.003, 0.002, 0.0015, 0.001, 0.0008][speed - 1]
         step_px = 12
         if game:
-            lift = max(lift, 0.04)
+            lift = max(lift, 0.08)
             settle = max(settle, 0.017)
             step_px = 6
         total = len(self.paths)
