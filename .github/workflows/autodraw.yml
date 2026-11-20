@@ -9,6 +9,9 @@ on:
       - ".github/workflows/autodraw.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 defaults:
   run:
     working-directory: AutoDraw
@@ -32,3 +35,15 @@ jobs:
         with:
           name: AutoDraw
           path: AutoDraw/dist/AutoDraw.exe
+      - name: Publish download link
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=autodraw-latest
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" dist/AutoDraw.exe --prerelease --target "$GITHUB_SHA" \
+            --title "AutoDraw (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Download AutoDraw.exe and run it (Windows)."
